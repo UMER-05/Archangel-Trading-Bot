@@ -1,0 +1,49 @@
+# --- Dependencies ---
+node_modules/
+**/node_modules/
+node_modules/**
+node_modules
+
+# --- Build / Dist Outputs ---
+dist/
+build/
+out/
+.next/
+
+# --- React / Vite Artifacts ---
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.vite/
+
+# --- Packaging ---
+*.tgz
+
+# --- System / IDE files ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# --- Env / Secrets ---
+.env
+.env.*
+!.env.example
+.env.local
+.env.development.local
+.env.production.local
+.env.*.local
+# --- Logs ---
+logs/
+*.log
+
+# --- Vercel / Hosting ---
+.vercel/
+
+# --- Coverage / Tests ---
+coverage/
+**/coverage/
+playwright-report/
+test-results/

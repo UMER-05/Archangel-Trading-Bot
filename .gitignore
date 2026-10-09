@@ -1,0 +1,78 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+**/.env
+.env.backup
+**/.env.backup
+*.env.backup
+
+# Build outputs
+dist/
+build/
+*.log
+*.tsbuildinfo
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Large config files (these should be generated/downloaded separately)
+backend/config/mainnet.json
+backend/config/*.json
+backend/config/*.zip
+backend/config/*.tar.gz
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Testing
+coverage/
+.nyc_output/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Azure deployment
+.azure/
+*.pubxml
+*.publishsettings
+backend/deploy/
+
+# Next.js
+.next/
+out/
+
+# Production
+/build
+
+# Misc
+.cache/
+
+# Electron build output
+dist-electron/
+*.exe
+*.dmg
+*.AppImage
+*.deb
+*.rpm
+
+# Electron builder
+electron-builder.yml

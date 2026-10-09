@@ -1,0 +1,113 @@
+{
+  "name": "archangel-desktop",
+  "version": "1.0.0",
+  "description": "ArchAngel Trading Bot - Desktop Application",
+  "main": "electron/main.js",
+  "author": {
+    "name": "Onuh Victor Ali",
+    "email": "onuhvictorali95@gmail.com"
+  },
+  "license": "MIT",
+  "scripts": {
+    "electron": "electron .",
+    "electron:dev": "electron .",
+    "build:backend": "cd backend && npm run build",
+    "build:frontend": "cd frontend && npm run build",
+    "build:all": "npm run build:backend && npm run build:frontend",
+    "pack": "npm run build:all && electron-builder --dir",
+    "dist": "npm run build:all && electron-builder",
+    "dist:win": "npm run build:all && electron-builder --win",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "build": {
+    "appId": "com.archangel.tradingbot",
+    "productName": "ArchAngel Trading Bot",
+    "copyright": "Copyright © 2025 Onuh Victor Ali",
+    "directories": {
+      "output": "dist-electron",
+      "buildResources": "electron/resources"
+    },
+    "files": [
+      "electron/**/*",
+      "backend/dist/**/*",
+      "backend/node_modules/**/*",
+      "backend/package.json",
+      "frontend/build/**/*",
+      "frontend/.next/**/*",
+      "frontend/node_modules/**/*",
+      "frontend/package.json",
+      "frontend/public/**/*",
+      "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}",
+      "!**/node_modules/*/{test,__tests__,tests,powered-test,example,examples}",
+      "!**/node_modules/*.d.ts",
+      "!**/node_modules/.bin",
+      "!**/*.{iml,o,hprof,orig,pyc,pyo,rbc,swp,csproj,sln,xproj}",
+      "!.editorconfig",
+      "!**/._*",
+      "!**/{.DS_Store,.git,.hg,.svn,CVS,RCS,SCCS,.gitignore,.gitattributes}",
+      "!**/{__pycache__,thumbs.db,.flowconfig,.idea,.vs,.nyc_output}",
+      "!**/{appveyor.yml,.travis.yml,circle.yml}",
+      "!**/{npm-debug.log,yarn.lock,.yarn-integrity,.yarn-metadata.json}"
+    ],
+    "extraResources": [
+      {
+        "from": "backend/config",
+        "to": "config",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "sign": false,
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "electron/resources/icon.ico",
+      "publisherName": "Onuh Victor Ali",
+      "verifyUpdateCodeSignature": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "ArchAngel Trading Bot",
+      "installerIcon": "electron/resources/icon.ico",
+      "uninstallerIcon": "electron/resources/icon.ico",
+      "installerHeaderIcon": "electron/resources/icon.ico",
+      "deleteAppDataOnUninstall": false
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "icon": "electron/resources/icon.icns",
+      "category": "public.app-category.finance"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "icon": "electron/resources/icon.png",
+      "category": "Finance"
+    }
+  },
+  "devDependencies": {
+    "@types/p-queue": "^3.1.0",
+    "baseline-browser-mapping": "^2.9.11",
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1"
+  },
+  "dependencies": {
+    "electron-is-dev": "^2.0.0",
+    "electron-store": "^8.1.0",
+    "framer-motion": "^12.23.26",
+    "p-queue": "^9.0.1"
+  }
+}
