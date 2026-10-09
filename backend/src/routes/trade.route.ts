@@ -18,6 +18,19 @@ import { canExecuteTrade } from "../services/riskManagement.service.js";
 
 const logger = getLogger("trade.route");
 const router = express.Router();
+const MAX_RAW_AMOUNT = (1n << 64n) - 1n;
+
+function isPositiveRawAmount(value: unknown): value is number | string {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value > 0;
+  }
+  if (typeof value !== "string" || !/^\d+$/.test(value)) {
+    return false;
+  }
+
+  const amount = BigInt(value);
+  return amount > 0n && amount <= MAX_RAW_AMOUNT;
+}
 
 /**
  * GET /api/trade/manual-buy-candidates?limit=40
@@ -177,7 +190,7 @@ router.post("/prepare", async (req, res) => {
     const { type, inputMint, outputMint, wallet, amountLamports, slippageBps } =
       req.body;
 
-    if (!type || !outputMint || !wallet || !amountLamports) {
+    if (!type || !outputMint || !wallet || !isPositiveRawAmount(amountLamports)) {
       return res.status(400).json({
         success: false,
         message: "Missing required parameters",
@@ -377,8 +390,7 @@ router.post("/confirm", async (req, res) => {
       (type !== "buy" && type !== "sell") ||
       !token ||
       !wallet ||
-      !Number.isInteger(amountLamports) ||
-      amountLamports <= 0
+      !isPositiveRawAmount(amountLamports)
     ) {
       return res.status(400).json({
         success: false,
@@ -483,7 +495,8 @@ router.post("/confirm", async (req, res) => {
         getOnChainMintSupply(token),
       ]);
       if (priceQuote?.outAmount) {
-        const solAmount = amountLamports / 1e9;
+        const amountForEstimate = Number(amountLamports);
+        const solAmount = amountForEstimate / 1e9;
         const tokenDecimals = supplyInfo.available ? supplyInfo.decimals : 9;
         const tokenAmount = Number(priceQuote.outAmount) / 10 ** tokenDecimals;
         price =
@@ -503,7 +516,10 @@ router.post("/confirm", async (req, res) => {
         type === "buy" ? "So11111111111111111111111111111111111111112" : token,
       outputMint:
         type === "buy" ? token : "So11111111111111111111111111111111111111112",
-      amount: amountLamports,
+      // TradeRecord stores amounts as numbers. Keep the raw amount as a
+      // string through Jupiter quoting, then convert only for this legacy
+      // approximate reporting record; the signed transaction remains exact.
+      amount: Number(amountLamports),
       price,
       pnl,
       wallet: actualSigner || wallet || "unknown",
