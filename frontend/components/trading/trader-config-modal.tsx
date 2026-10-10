@@ -115,12 +115,19 @@ export function TraderConfigModal({ isOpen, onClose }: TraderConfigModalProps) {
             feeReserveSol,
             budgetSol: budgetForPreview,
             deployedSol: deployedSol ?? 0,
+            fixedTradeAmountSol:
+              formData.fixedTradeAmountSol === ""
+                ? undefined
+                : Number(formData.fixedTradeAmountSol),
             realizedLossSol:
               budgetForPreview !== null && budgetForPreview === savedBudget
                 ? (realizedLossSol ?? 0)
                 : 0,
           }),
-          balanceSol
+          balanceSol,
+          formData.fixedTradeAmountSol === ""
+            ? null
+            : Number(formData.fixedTradeAmountSol)
         )
       : null;
 
@@ -316,7 +323,7 @@ export function TraderConfigModal({ isOpen, onClose }: TraderConfigModalProps) {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-300 mb-2">
-                    Minimum Launch Age (seconds){" "}
+                    Minimum age for eligibility at discovery (seconds){" "}
                     <span className="text-gray-500 font-normal">optional</span>
                   </label>
                   <input
@@ -345,10 +352,13 @@ export function TraderConfigModal({ isOpen, onClose }: TraderConfigModalProps) {
                     <p className="text-xs text-gray-500 mt-1">
                       {formData.minSecondsSinceLaunch === "" ||
                       Number(formData.minSecondsSinceLaunch) === 0
-                        ? "Buys as soon as a token passes the checks."
-                        : `Only buy tokens once their pool is at least ${formData.minSecondsSinceLaunch}s old.`}
+                        ? "No age filter — eligible tokens can be bought immediately."
+                        : `Tokens younger than ${formData.minSecondsSinceLaunch}s at discovery are skipped; the bot does not wait and retry them.`}
                     </p>
                   )}
+                  <p className="text-xs text-gray-500 mt-1">
+                    This is a skip filter, not a wait-before-buy delay.
+                  </p>
                 </div>
 
                 <div>
@@ -373,9 +383,11 @@ export function TraderConfigModal({ isOpen, onClose }: TraderConfigModalProps) {
                   ) : (
                     <>
                       <p className="text-xs text-gray-500 mt-1">
-                        The bot splits your trading wallet&apos;s balance across
-                        up to this many open positions. It stops opening new
-                        ones when every slot is in use or the balance runs low.
+                        {formData.fixedTradeAmountSol === ""
+                          ? "When no fixed size is set, the bot splits available balance across these slots."
+                          : "Each buy uses the fixed amount above; this still limits simultaneous positions."}{" "}
+                        It stops opening new ones when every slot is in use or
+                        the balance runs low.
                       </p>
                       {sizingNote && (
                         <p
@@ -409,12 +421,46 @@ export function TraderConfigModal({ isOpen, onClose }: TraderConfigModalProps) {
                         ? formData.maxOpenPositions
                         : 1
                     }
+                    fixedTradeAmountSol={
+                      formData.fixedTradeAmountSol === ""
+                        ? null
+                        : Number(formData.fixedTradeAmountSol)
+                    }
                     savedBudgetSol={savedBudget}
                     capitalSol={tradingCapitalSol}
                     realizedLossSol={realizedLossSol}
                     deployedSol={deployedSol}
                     protectedProfitSol={protectedProfitSol}
                   />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-2">
+                    Fixed SOL per trade (optional)
+                  </label>
+                  <input
+                    type="number"
+                    value={formData.fixedTradeAmountSol}
+                    onChange={(e) =>
+                      setField(
+                        "fixedTradeAmountSol",
+                        e.target.value === "" ? "" : Number(e.target.value)
+                      )
+                    }
+                    className={INPUT_CLASS}
+                    min="0.003"
+                    step="0.001"
+                    placeholder="Split balance across free slots"
+                  />
+                  {errors.fixedTradeAmountSol && (
+                    <p className="text-xs text-red-500 mt-1">
+                      {errors.fixedTradeAmountSol}
+                    </p>
+                  )}
+                  <p className="text-xs text-gray-500 mt-1">
+                    Buys use this exact amount or are skipped if the wallet or
+                    trading budget cannot cover it.
+                  </p>
                 </div>
 
                 <div>
@@ -444,15 +490,115 @@ export function TraderConfigModal({ isOpen, onClose }: TraderConfigModalProps) {
                       {config?.tradesTaken != null
                         ? `${config.tradesTaken} trade${
                             config.tradesTaken === 1 ? "" : "s"
-                          } taken so far (closed trades count). `
+                          } taken so far in this wallet's lifetime (closed trades count). `
                         : ""}
                       {formData.maxTotalTrades === ""
                         ? "The bot trades for you with no lifetime limit."
-                        : `The bot stops trading for you after ${formData.maxTotalTrades} total trade${
+                        : `The bot stops trading for you after ${formData.maxTotalTrades} lifetime trade${
                             formData.maxTotalTrades === 1 ? "" : "s"
-                          } — raise this number to continue.`}
+                          } — this counter does not reset; raise the cap to continue.`}
                     </p>
                   )}
+                </div>
+
+                <div className="col-span-2 grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-300 mb-2">
+                      Slippage tolerance (%)
+                    </label>
+                    <input
+                      type="number"
+                      value={formData.slippagePct}
+                      onChange={(e) =>
+                        setField("slippagePct", Number(e.target.value))
+                      }
+                      className={INPUT_CLASS}
+                      min="0.1"
+                      max="100"
+                      step="0.1"
+                    />
+                    {errors.slippagePct && (
+                      <p className="text-xs text-red-500 mt-1">
+                        {errors.slippagePct}
+                      </p>
+                    )}
+                    <p className="text-xs text-gray-500 mt-1">
+                      Applied consistently to quotes and swaps.
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-300 mb-2">
+                      Priority fee (SOL)
+                    </label>
+                    <input
+                      type="number"
+                      value={formData.priorityFeeSol}
+                      onChange={(e) =>
+                        setField("priorityFeeSol", Number(e.target.value))
+                      }
+                      className={INPUT_CLASS}
+                      min="0"
+                      max="0.01"
+                      step="0.00001"
+                    />
+                    {errors.priorityFeeSol && (
+                      <p className="text-xs text-red-500 mt-1">
+                        {errors.priorityFeeSol}
+                      </p>
+                    )}
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-300 mb-2">
+                      Daily loss limit (%)
+                    </label>
+                    <input
+                      type="number"
+                      value={formData.maxDailyLossPct}
+                      onChange={(e) =>
+                        setField("maxDailyLossPct", Number(e.target.value))
+                      }
+                      className={INPUT_CLASS}
+                      min="0.1"
+                      max="100"
+                      step="0.1"
+                    />
+                    {errors.maxDailyLossPct && (
+                      <p className="text-xs text-red-500 mt-1">
+                        {errors.maxDailyLossPct}
+                      </p>
+                    )}
+                    <p className="text-xs text-gray-500 mt-1">
+                      Reaching it pauses new buys until tomorrow; open
+                      positions remain managed.
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-300 mb-2">
+                      Per-trade size cap (% of wallet equity)
+                    </label>
+                    <input
+                      type="number"
+                      value={formData.maxRiskPerTradePct}
+                      onChange={(e) =>
+                        setField("maxRiskPerTradePct", Number(e.target.value))
+                      }
+                      className={INPUT_CLASS}
+                      min="0.1"
+                      max="100"
+                      step="0.1"
+                    />
+                    {errors.maxRiskPerTradePct && (
+                      <p className="text-xs text-red-500 mt-1">
+                        {errors.maxRiskPerTradePct}
+                      </p>
+                    )}
+                    <p className="text-xs text-gray-500 mt-1">
+                      Hard cap for fixed-size and manual buys.
+                    </p>
+                  </div>
                 </div>
 
                 <div className="flex items-center">

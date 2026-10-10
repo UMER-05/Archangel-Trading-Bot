@@ -208,6 +208,50 @@ router.patch("/:walletAddress/global", async (req: Request, res: Response) => {
       });
     }
 
+    const numericRanges = [
+      ["fixedTradeAmountSol", 0, 1_000_000, true],
+      ["slippageBps", 10, 10_000, false],
+      ["priorityFeeSol", 0, 0.01, false],
+      ["maxDailyLossPct", 0.1, 100, false],
+      ["maxRiskPerTradePct", 0.1, 100, false],
+    ] as const;
+    for (const [field, min, max, nullable] of numericRanges) {
+      const value = settings?.[field];
+      if (value === undefined || (nullable && value === null)) continue;
+      if (
+        typeof value !== "number" ||
+        !Number.isFinite(value) ||
+        value < min ||
+        value > max
+      ) {
+        return res.status(400).json({
+          success: false,
+          error: `${field} must be a finite number between ${min} and ${max}${nullable ? ", or null to use balance-based sizing" : ""}`,
+        });
+      }
+    }
+    if (
+      settings?.slippageBps !== undefined &&
+      !Number.isInteger(settings.slippageBps)
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: "slippageBps must be a whole number",
+      });
+    }
+    const minimumFixedTradeSol = Number(
+      process.env.MIN_AUTO_TRADE_SOL ?? "0.003",
+    );
+    if (
+      typeof settings?.fixedTradeAmountSol === "number" &&
+      settings.fixedTradeAmountSol < minimumFixedTradeSol
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: `fixedTradeAmountSol must be at least ${minimumFixedTradeSol} SOL`,
+      });
+    }
+
     // Max Total Trades — a lifetime cap on how many trades the bot takes for
     // this wallet (see multiUserExecution.service.ts). Same fail-closed
     // reasoning as the other numeric settings above.

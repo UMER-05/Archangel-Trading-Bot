@@ -70,6 +70,33 @@ describe("computePositionSize (must match the backend rule)", () => {
       }).status
     ).toBe("low_balance");
   });
+
+  it("keeps an explicit fixed buy amount as slots fill", () => {
+    const r = computePositionSize({
+      ...base,
+      balanceSol: 1,
+      openPositions: 3,
+      maxOpenPositions: 5,
+      fixedTradeAmountSol: 0.15,
+    });
+    if (r.status !== "ready") throw new Error("expected ready");
+    expect(r.buySol).toBe(0.15);
+  });
+
+  it("does not shrink a fixed buy amount to fit the available balance", () => {
+    const r = computePositionSize({
+      minTradeSol: 0.01,
+      feeReserveSol: 0.01,
+      balanceSol: 0.1,
+      openPositions: 0,
+      maxOpenPositions: 5,
+      fixedTradeAmountSol: 0.15,
+    });
+    expect(r.status).toBe("low_balance");
+    if (r.status === "low_balance") {
+      expect(r.neededSol).toBeCloseTo(0.16, 9);
+    }
+  });
 });
 
 describe("minBalanceForSlots", () => {
@@ -95,6 +122,19 @@ describe("describeSizing", () => {
     const d = describeSizing(r, 10);
     expect(d?.tone).toBe("ok");
     expect(d?.text).toContain("2 SOL per position");
+  });
+
+  it("describes a fixed amount as per-trade sizing", () => {
+    const r = computePositionSize({
+      ...base,
+      balanceSol: 1,
+      openPositions: 2,
+      maxOpenPositions: 5,
+      fixedTradeAmountSol: 0.15,
+    });
+    expect(describeSizing(r, 1, 0.15)?.text).toContain(
+      "Fixed size: 0.15 SOL per trade"
+    );
   });
 
   it("reports a full house as information, not an error", () => {

@@ -71,9 +71,6 @@ class ValidationPipelineService {
   private readonly MAX_SLIPPAGE = Number(
     process.env.MAX_PIPELINE_SLIPPAGE_PCT ?? 49,
   );
-  private readonly AUTO_BUY_SLIPPAGE = parseFloat(
-    process.env.AUTO_BUY_SLIPPAGE_PCT || "10",
-  );
   // Used by the "liquidity sufficient?" Jupiter execution check — see
   // evaluateJupiterExecutionQuote. Deliberately independent of Phase 3's own
   // liquidity floor (jupiterTradeability.service.ts): that one ran once,
@@ -86,11 +83,6 @@ class ValidationPipelineService {
   private readonly MAX_QUOTE_AGE_MS = Number(
     process.env.MAX_QUOTE_AGE_MS ?? 8000,
   );
-  // Jupiter's quote/swap APIs take slippage in basis points, not percent
-  private get AUTO_BUY_SLIPPAGE_BPS(): number {
-    return this.AUTO_BUY_SLIPPAGE * 100;
-  }
-
   /**
    * Per-wallet execution leg of the single linear discovery→validate→buy
    * pipeline (see candidatePipeline.service.ts for the full sequence).
@@ -145,6 +137,7 @@ class ValidationPipelineService {
     }
     const buySol = stage0.buySol;
     const wallet = walletContext.publicKey;
+    const { slippageBps, priorityFeeSol } = stage0;
 
     // Stage 1 (Phase 5 — Jupiter quote): fresh, per-wallet-sized quote +
     // affordability check right before committing capital.
@@ -152,6 +145,7 @@ class ValidationPipelineService {
       tokenMint,
       buySol,
       wallet,
+      slippageBps,
     );
     results.push(stage1);
     if (!stage1.passed) {
@@ -174,6 +168,8 @@ class ValidationPipelineService {
       tokenMint,
       buySol,
       walletContext,
+      slippageBps,
+      priorityFeeSol,
     );
     results.push(stage2);
     if (!stage2.passed) {
@@ -389,9 +385,26 @@ class ValidationPipelineService {
     tokenMint: string,
     walletContext: WalletContext,
   ): Promise<
-    | { passed: true; buySol: number }
+    | {
+        passed: true;
+        buySol: number;
+        slippageBps: number;
+        priorityFeeSol: number;
+      }
     | { passed: false; result: ValidationResult }
   > {
+    if (!(await dbService.getGlobalAutoTradeEnabled())) {
+      return {
+        passed: false,
+        result: {
+          passed: false,
+          stage: 0,
+          stageName: "Global Auto-Trade Pause",
+          reason: "Global auto-buys are paused by the operator",
+        },
+      };
+    }
+
     const wallet = walletContext.publicKey;
     const [walletBalance, config, openPositions] = await Promise.all([
       getBalanceInSol(wallet),
@@ -448,6 +461,7 @@ class ValidationPipelineService {
       budgetSol,
       deployedSol,
       realizedLossSol,
+      fixedTradeAmountSol: config.fixedTradeAmountSol ?? undefined,
     });
 
     if (!sizing.ok) {
@@ -518,9 +532,11 @@ class ValidationPipelineService {
 
     const riskCheck = await canExecuteTrade(buySol, wallet, {
       ownerWallet: walletContext.ownerWallet,
-      // The per-trade percentage cap is for sizing-by-percentage; here the
-      // size is the trader's own 1/N split (see the doc comment above).
-      enforcePerTradeCap: false,
+      maxDailyLossPct: config.maxDailyLossPct,
+      maxRiskPerTradePct: config.maxRiskPerTradePct,
+      // Keep the existing split sizing behavior; the hard per-trade cap
+      // applies when the trader has explicitly chosen an exact buy amount.
+      enforcePerTradeCap: config.fixedTradeAmountSol !== null,
     });
     if (!riskCheck.allowed) {
       return {
@@ -535,7 +551,12 @@ class ValidationPipelineService {
       };
     }
 
-    return { passed: true, buySol };
+    return {
+      passed: true,
+      buySol,
+      slippageBps: config.slippageBps,
+      priorityFeeSol: config.priorityFeeSol,
+    };
   }
 
   /**
@@ -663,6 +684,7 @@ class ValidationPipelineService {
     tokenMint: string,
     buySol: number,
     wallet: string,
+    slippageBps: number,
   ): Promise<ValidationResult> {
     LOG.info(
       `[Stage 1] 🔍 Jupiter Pre-Execution Check for ${tokenMint.slice(0, 8)}...`,
@@ -675,7 +697,7 @@ class ValidationPipelineService {
         SOL_MINT,
         tokenMint,
         lamports,
-        this.AUTO_BUY_SLIPPAGE_BPS,
+        slippageBps,
       );
       const quoteFetchedAt = Date.now();
 
@@ -744,6 +766,8 @@ class ValidationPipelineService {
     tokenMint: string,
     buySol: number,
     walletContext: WalletContext,
+    slippageBps: number,
+    priorityFeeSol: number,
   ): Promise<ValidationResult> {
     const wallet = walletContext.publicKey;
     LOG.info(
@@ -757,7 +781,7 @@ class ValidationPipelineService {
         SOL_MINT,
         tokenMint,
         lamports,
-        this.AUTO_BUY_SLIPPAGE_BPS,
+        slippageBps,
       );
       const quoteFetchedAt = Date.now();
 
@@ -798,8 +822,9 @@ class ValidationPipelineService {
             outputMint: tokenMint,
             amount: lamports,
             userPublicKey: wallet,
-            slippageBps: this.AUTO_BUY_SLIPPAGE_BPS,
+            slippageBps,
             signer: walletContext.keypair,
+            priorityFeeSol,
           })
         : {
             success: true as const,

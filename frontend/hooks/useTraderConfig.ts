@@ -28,6 +28,11 @@ export interface TraderConfig {
     // null explicitly clears a previously-set cap (unlimited); undefined
     // just means "not included in this update".
     maxTotalTrades?: number | null;
+    fixedTradeAmountSol?: number | null;
+    slippageBps?: number;
+    priorityFeeSol?: number;
+    maxDailyLossPct?: number;
+    maxRiskPerTradePct?: number;
   };
   tokenSpecificSettings: {
     [mint: string]: {

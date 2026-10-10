@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import {
   TrendingUp,
@@ -25,12 +25,44 @@ export default function ActionsBar() {
   const router = useRouter();
   const { connected, publicKey } = useWallet();
   const { signMessage } = useSolanaWallet();
-  const { connected: socketConnected } = useSocket();
+  const { connected: socketConnected, lastMessage } = useSocket();
 
   const { config, refetch } = useTraderConfig();
 
   const [stopping, setStopping] = useState(false);
   const [toggling, setToggling] = useState(false);
+  const [globalAutoTradeEnabled, setGlobalAutoTradeEnabled] = useState<
+    boolean | null
+  >(null);
+  const [operatorWallet, setOperatorWallet] = useState<string | null>(null);
+  const [globalToggling, setGlobalToggling] = useState(false);
+
+  const refreshGlobalAutoTrade = useCallback(async () => {
+    const res = await fetcher<{
+      success: boolean;
+      enabled?: boolean;
+      operatorWallet?: string | null;
+      error?: string;
+    }>("/api/admin/auto-trade");
+    if (!res?.success || typeof res.enabled !== "boolean") {
+      throw new Error(res?.error || "Global auto-trade status is unavailable");
+    }
+    setGlobalAutoTradeEnabled(res.enabled);
+    setOperatorWallet(res.operatorWallet ?? null);
+  }, []);
+
+  useEffect(() => {
+    void refreshGlobalAutoTrade().catch((err: any) => {
+      toast.error(err?.message || "Global auto-trade status is unavailable");
+      console.error(err);
+    });
+  }, [refreshGlobalAutoTrade]);
+
+  useEffect(() => {
+    if (lastMessage?.event !== "globalAutoTrade:updated") return;
+    const enabled = lastMessage.payload?.enabled;
+    if (typeof enabled === "boolean") setGlobalAutoTradeEnabled(enabled);
+  }, [lastMessage]);
 
   // Unknown (settings not loaded) is neither paused nor running.
   const autoTradeEnabled: boolean | null = config
@@ -75,6 +107,51 @@ export default function ActionsBar() {
     },
     [connected, publicKey, signMessage, refetch]
   );
+
+  const handleToggleGlobalAutoTrade = useCallback(async () => {
+    if (
+      !connected ||
+      !publicKey ||
+      !operatorWallet ||
+      publicKey !== operatorWallet
+    ) {
+      toast.error("Connect the configured operator wallet to change this setting.");
+      return;
+    }
+    const enabled = !globalAutoTradeEnabled;
+    setGlobalToggling(true);
+    try {
+      const auth = await signWalletAuth(signMessage, operatorWallet);
+      const res = await fetcher<{
+        success: boolean;
+        enabled?: boolean;
+        error?: string;
+      }>("/api/admin/auto-trade", {
+        method: "POST",
+        body: JSON.stringify({ enabled, ...auth }),
+      });
+      if (!res?.success || typeof res.enabled !== "boolean") {
+        throw new Error(res?.error || "Couldn't change global auto-trade");
+      }
+      setGlobalAutoTradeEnabled(res.enabled);
+      toast.success(
+        res.enabled
+          ? "Global auto-buys resumed."
+          : "Global auto-buys paused. No positions were sold."
+      );
+    } catch (err: any) {
+      toast.error(err?.message || "Couldn't change global auto-trade");
+      console.error(err);
+    } finally {
+      setGlobalToggling(false);
+    }
+  }, [
+    connected,
+    publicKey,
+    operatorWallet,
+    globalAutoTradeEnabled,
+    signMessage,
+  ]);
 
   const handleStopAutoTrade = useCallback(async () => {
     if (!connected || !publicKey) {
@@ -221,6 +298,34 @@ export default function ActionsBar() {
           )}
           {autoTradeEnabled ? "Pause Auto Trade" : "Resume Auto Trade"}
         </Button>
+
+        {connected &&
+          publicKey &&
+          operatorWallet === publicKey &&
+          globalAutoTradeEnabled !== null && (
+            <Button
+              variant="outline"
+              disabled={globalToggling || stopping || toggling}
+              onClick={handleToggleGlobalAutoTrade}
+              className="flex items-center gap-2"
+              title={
+                globalAutoTradeEnabled
+                  ? "Pause auto-buys for every wallet. Existing positions remain open and managed."
+                  : "Resume auto-buys for every wallet."
+              }
+            >
+              {globalToggling ? (
+                <Loader2 className="animate-spin" />
+              ) : globalAutoTradeEnabled ? (
+                <Pause />
+              ) : (
+                <Play />
+              )}
+              {globalAutoTradeEnabled
+                ? "Pause All Auto-Buys"
+                : "Resume All Auto-Buys"}
+            </Button>
+          )}
 
         <Button
           variant="outline"

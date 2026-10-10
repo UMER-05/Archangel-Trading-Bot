@@ -22,6 +22,7 @@ interface TradingBudgetControlProps {
   // budget isn't saved yet).
   balanceSol: number | null;
   maxOpenPositions: number;
+  fixedTradeAmountSol?: number | null;
   savedBudgetSol: number | null;
   capitalSol: number | null;
   realizedLossSol: number | null;
@@ -38,6 +39,7 @@ export const TradingBudgetControl: React.FC<TradingBudgetControlProps> = ({
   error,
   balanceSol,
   maxOpenPositions,
+  fixedTradeAmountSol,
   savedBudgetSol,
   capitalSol,
   realizedLossSol,
@@ -45,9 +47,11 @@ export const TradingBudgetControl: React.FC<TradingBudgetControlProps> = ({
   protectedProfitSol,
 }) => {
   const perPosition =
-    enabled && amount !== "" && Number(amount) > 0 && maxOpenPositions > 0
-      ? Number(amount) / maxOpenPositions
-      : null;
+    fixedTradeAmountSol != null
+      ? fixedTradeAmountSol
+      : enabled && amount !== "" && Number(amount) > 0 && maxOpenPositions > 0
+        ? Number(amount) / maxOpenPositions
+        : null;
   // The read-out describes what is SAVED, so hide it while the user is typing
   // a different number that hasn't been saved yet.
   const showSaved =
@@ -126,8 +130,9 @@ export const TradingBudgetControl: React.FC<TradingBudgetControlProps> = ({
 
           {perPosition !== null && !error && (
             <p className="text-xs text-green-400">
-              Each position ≈ {fmt(perPosition)} SOL (budget ÷{" "}
-              {maxOpenPositions} Max Open Positions).
+              {fixedTradeAmountSol != null
+                ? `Each buy uses the fixed ${fmt(perPosition)} SOL amount; it is skipped if the available budget cannot cover it.`
+                : `Each position ≈ ${fmt(perPosition)} SOL (budget ÷ ${maxOpenPositions} Max Open Positions).`}
             </p>
           )}
 

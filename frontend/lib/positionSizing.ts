@@ -30,6 +30,7 @@ export interface SizingInput {
   budgetSol?: number | null | undefined;
   deployedSol?: number | undefined;
   realizedLossSol?: number | undefined;
+  fixedTradeAmountSol?: number | undefined;
 }
 
 export type LimitedBy = "balance" | "budget";
@@ -133,6 +134,42 @@ export function computePositionSize(input: SizingInput): SizingResult {
   const limitedBy: LimitedBy =
     budgetRoom < cashSpendable ? "budget" : "balance";
 
+  if (
+    typeof input.fixedTradeAmountSol === "number" &&
+    Number.isFinite(input.fixedTradeAmountSol) &&
+    input.fixedTradeAmountSol > 0
+  ) {
+    if (input.fixedTradeAmountSol < minTradeSol) {
+      return {
+        status: "low_balance",
+        spendableSol,
+        neededSol: feeReserveSol + minTradeSol,
+        limitedBy,
+      };
+    }
+    if (spendableSol + 1e-9 < input.fixedTradeAmountSol) {
+      return {
+        status: "low_balance",
+        spendableSol,
+        neededSol: feeReserveSol + input.fixedTradeAmountSol,
+        limitedBy,
+        ...(limitedBy === "budget" && budget !== null
+          ? {
+              neededBudgetSol:
+                deployedSol + realizedLossSol + input.fixedTradeAmountSol,
+            }
+          : {}),
+      };
+    }
+    return {
+      status: "ready",
+      buySol: input.fixedTradeAmountSol,
+      slotsUsed: 1,
+      freeSlots,
+      limitedBy,
+    };
+  }
+
   // The epsilon stops 0.03 / 0.01 = 2.9999999999999996 costing a whole slot.
   const affordableSlots =
     minTradeSol > 0 ? Math.floor(spendableSol / minTradeSol + 1e-9) : freeSlots;
@@ -164,12 +201,13 @@ const fmt = (n: number) => Number(n.toFixed(4));
 /** One line for the settings UI: what the split means for this balance. */
 export function describeSizing(
   result: SizingResult | null,
-  balanceSol: number | null
+  balanceSol: number | null,
+  fixedTradeAmountSol?: number | null
 ): { tone: "ok" | "info" | "warn"; text: string } | null {
   if (!result) return null;
   if (result.status === "ready") {
     const partial =
-      result.slotsUsed < result.freeSlots
+      fixedTradeAmountSol == null && result.slotsUsed < result.freeSlots
         ? ` (${
             result.limitedBy === "budget" ? "the trading budget" : "the balance"
           } only funds ${result.slotsUsed} of ${result.freeSlots} free slots at the minimum size)`
@@ -177,7 +215,9 @@ export function describeSizing(
     return {
       tone: "ok",
       text:
-        result.limitedBy === "budget"
+        fixedTradeAmountSol != null
+          ? `Fixed size: ${fmt(result.buySol)} SOL per trade${partial}.`
+          : result.limitedBy === "budget"
           ? `≈ ${fmt(result.buySol)} SOL per position from your trading budget${partial}.`
           : `≈ ${fmt(result.buySol)} SOL per position from your ${
               balanceSol != null ? fmt(balanceSol) : "current"

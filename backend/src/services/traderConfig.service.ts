@@ -26,6 +26,22 @@ async function getDb(): Promise<Db> {
 
 const log = getLogger("TraderConfigService");
 
+function boundedSetting(
+  value: unknown,
+  fallback: number,
+  min: number,
+  max: number,
+  integer = false,
+): number {
+  return typeof value === "number" &&
+    Number.isFinite(value) &&
+    value >= min &&
+    value <= max &&
+    (!integer || Number.isInteger(value))
+    ? value
+    : fallback;
+}
+
 export interface TraderConfig {
   walletAddress: string;
   globalSettings: {
@@ -58,6 +74,16 @@ export interface TraderConfig {
     // raises the number (there's no separate "reset" — the count reflects
     // real trade history). null explicitly clears a previously-set cap.
     maxTotalTrades?: number | null;
+    /** Exact SOL amount for each auto-buy; unset means split balance across free slots. */
+    fixedTradeAmountSol?: number | null;
+    /** Jupiter slippage tolerance in basis points. */
+    slippageBps?: number;
+    /** Jupiter prioritization fee in SOL. */
+    priorityFeeSol?: number;
+    /** Per-wallet daily-loss circuit breaker. */
+    maxDailyLossPct?: number;
+    /** Per-wallet maximum trade size as a percent of portfolio equity. */
+    maxRiskPerTradePct?: number;
   };
   tokenSpecificSettings: {
     [mint: string]: {
@@ -306,16 +332,51 @@ export async function getEffectiveConfig(
   takeProfitPct: number;
   stopLossPct: number;
   maxOpenPositions: number;
+  fixedTradeAmountSol: number | null;
+  slippageBps: number;
+  priorityFeeSol: number;
+  maxDailyLossPct: number;
+  maxRiskPerTradePct: number;
   triggerMarketCapSol?: number;
   autoTrade: boolean;
 }> {
   const config = await getTraderConfig(walletAddress);
+  const environmentSlippageBps = boundedSetting(
+    Math.round(Number(process.env.AUTO_BUY_SLIPPAGE_PCT ?? 10) * 100),
+    1000,
+    10,
+    10_000,
+    true,
+  );
+  const environmentPriorityFeeSol = boundedSetting(
+    Number(process.env.JUPITER_PRIORITY_FEE ?? 0.00003),
+    0.00003,
+    0,
+    0.01,
+  );
+  const environmentMaxDailyLossPct = boundedSetting(
+    Number(process.env.MAX_DAILY_LOSS_PCT ?? 6),
+    6,
+    0.1,
+    100,
+  );
+  const environmentMaxRiskPerTradePct = boundedSetting(
+    Number(process.env.MAX_RISK_PER_TRADE_PCT ?? 2),
+    2,
+    0.1,
+    100,
+  );
 
   // Default values from environment
   const defaults = {
     minMarketCapSol: Number(process.env.MIN_MARKETCAP_SOL ?? 3),
     takeProfitPct: Number(process.env.TP_PCT ?? 0.1),
     maxOpenPositions: normalizeMaxOpenPositions(undefined),
+    fixedTradeAmountSol: null,
+    slippageBps: environmentSlippageBps,
+    priorityFeeSol: environmentPriorityFeeSol,
+    maxDailyLossPct: environmentMaxDailyLossPct,
+    maxRiskPerTradePct: environmentMaxRiskPerTradePct,
     // Must match monitor.service.ts's DEFAULT_SL_PCT fallback (0.3) — that
     // 2% figure was the pre-fix default that caused a self-inflicted
     // stop-loss bug (see monitor.service.ts). Both read SL_PCT so they agree
@@ -337,6 +398,11 @@ export async function getEffectiveConfig(
     takeProfitPct: number;
     stopLossPct: number;
     maxOpenPositions: number;
+    fixedTradeAmountSol: number | null;
+    slippageBps: number;
+    priorityFeeSol: number;
+    maxDailyLossPct: number;
+    maxRiskPerTradePct: number;
     triggerMarketCapSol?: number;
     autoTrade: boolean;
   } = {
@@ -355,6 +421,41 @@ export async function getEffectiveConfig(
     maxOpenPositions: normalizeMaxOpenPositions(
       config.globalSettings.maxOpenPositions,
     ),
+    fixedTradeAmountSol:
+      config.globalSettings.fixedTradeAmountSol != null &&
+      Number.isFinite(config.globalSettings.fixedTradeAmountSol) &&
+      config.globalSettings.fixedTradeAmountSol > 0
+        ? config.globalSettings.fixedTradeAmountSol
+        : null,
+    slippageBps:
+      boundedSetting(
+        config.globalSettings.slippageBps,
+        defaults.slippageBps,
+        10,
+        10_000,
+        true,
+      ),
+    priorityFeeSol:
+      boundedSetting(
+        config.globalSettings.priorityFeeSol,
+        defaults.priorityFeeSol,
+        0,
+        0.01,
+      ),
+    maxDailyLossPct:
+      boundedSetting(
+        config.globalSettings.maxDailyLossPct,
+        defaults.maxDailyLossPct,
+        0.1,
+        100,
+      ),
+    maxRiskPerTradePct:
+      boundedSetting(
+        config.globalSettings.maxRiskPerTradePct,
+        defaults.maxRiskPerTradePct,
+        0.1,
+        100,
+      ),
     autoTrade:
       tokenSettings.autoTrade ??
       config.globalSettings.autoTradeEnabled ??

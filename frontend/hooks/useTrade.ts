@@ -116,6 +116,7 @@ export const useTrade = () => {
           token: mint,
           amountLamports,
           wallet: publicKey,
+          slippageBps: prepareRes.data.slippageBps,
         }),
         // The backend broadcasts your signed transaction and waits for the
         // chain to confirm it — routinely longer than the 30s default when

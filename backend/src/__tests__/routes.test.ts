@@ -89,6 +89,42 @@ describe("GET /api/positions", () => {
   });
 });
 
+describe("POST /api/trade/confirm amount validation", () => {
+  const confirmTrade = (amountLamports: number | string) =>
+    request(app).post("/api/trade/confirm").send({
+      type: "sell",
+      token: "MINT_CONFIRM_AMOUNT",
+      wallet: "RouteTestWalletConfirmAmount222222222222222",
+      amountLamports,
+    });
+
+  it.each([
+    ["numeric amount", 1_000_000_000],
+    ["integer string", "1000000000"],
+    ["large raw token amount string", "9007199254740993"],
+    ["maximum u64 raw amount string", "18446744073709551615"],
+  ])("accepts a valid %s through amount validation", async (_label, amount) => {
+    const res = await confirmTrade(amount);
+    expect(res.statusCode).toBe(400);
+    expect(res.body.message).toBe(
+      "Signed transaction required for Jupiter trades",
+    );
+  });
+
+  it.each([
+    ["zero", "0"],
+    ["negative", "-1"],
+    ["fractional", "1.5"],
+    ["non-numeric", "1e9"],
+    ["unsafe number", 9_007_199_254_740_992],
+    ["larger than u64", "18446744073709551616"],
+  ])("rejects %s before transaction confirmation", async (_label, amount) => {
+    const res = await confirmTrade(amount);
+    expect(res.statusCode).toBe(400);
+    expect(res.body.message).toBe("Missing required parameters");
+  });
+});
+
 describe("POST/GET /api/user/settings — real persistence round-trip", () => {
   // POST requires a real wallet-signature proof (see user.route.ts's
   // verifyWalletAuth) — a fixed placeholder string can't produce one, so

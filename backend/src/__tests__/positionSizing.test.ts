@@ -114,6 +114,36 @@ describe("computePositionSize", () => {
     });
     expect(r.ok).toBe(false);
   });
+
+  it("uses an exact fixed amount instead of re-splitting as slots fill", () => {
+    const r = computePositionSize({
+      ...base,
+      balanceSol: 1,
+      openPositions: 3,
+      maxOpenPositions: 5,
+      fixedTradeAmountSol: 0.15,
+    });
+    if (!r.ok) throw new Error("expected a fixed-size buy");
+    expect(r.buySol).toBe(0.15);
+    expect(r.slotsUsed).toBe(1);
+  });
+
+  it("skips a fixed-size buy rather than silently reducing its amount", () => {
+    const r = computePositionSize({
+      minTradeSol: 0.01,
+      feeReserveSol: 0.01,
+      balanceSol: 0.1,
+      openPositions: 0,
+      maxOpenPositions: 5,
+      fixedTradeAmountSol: 0.15,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok && r.code === "LOW_BALANCE") {
+      expect(r.neededSol).toBeCloseTo(0.16, 9);
+    } else {
+      throw new Error("expected LOW_BALANCE");
+    }
+  });
 });
 
 describe("minBalanceForSlots", () => {

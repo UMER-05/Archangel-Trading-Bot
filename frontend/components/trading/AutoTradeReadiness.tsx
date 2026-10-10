@@ -124,9 +124,14 @@ export function AutoTradeReadiness({
     maxTotalTrades > 0 &&
     tradesTaken != null &&
     tradesTaken >= maxTotalTrades;
+  const tradeCountNote =
+    maxTotalTrades != null && tradesTaken != null
+      ? `${tradesTaken} of ${maxTotalTrades} lifetime trades used.`
+      : "";
 
-  // The same split the backend applies to every buy. The server's own
-  // (normalized) slot count wins over the locally saved one.
+  // The same sizing rule the backend applies to every buy. A fixed amount
+  // overrides the balance/free-slot split; the server's normalized slot
+  // count still limits simultaneous positions.
   const maxOpenPositions = walletMaxOpenPositions ?? g?.maxOpenPositions ?? 5;
   const sizing = computePositionSize({
     balanceSol,
@@ -137,6 +142,7 @@ export function AutoTradeReadiness({
     budgetSol: tradingBudgetSol,
     deployedSol: deployedSol ?? 0,
     realizedLossSol: realizedLossSol ?? 0,
+    fixedTradeAmountSol: g?.fixedTradeAmountSol ?? undefined,
   });
   const lowBalance =
     sizing.status === "low_balance" && sizing.limitedBy === "balance";
@@ -164,13 +170,19 @@ export function AutoTradeReadiness({
     dailyLossPct != null &&
     maxDailyLossPct != null &&
     dailyLossPct >= maxDailyLossPct;
+  const fixedTradeAmountOverRiskCap =
+    g?.fixedTradeAmountSol != null &&
+    g.maxRiskPerTradePct != null &&
+    g.fixedTradeAmountSol >
+      ((balanceSol + (deployedSol ?? 0)) * g.maxRiskPerTradePct) / 100;
 
   const ready =
     autoTradeEnabled &&
     !capReached &&
     !lowBalance &&
     !budgetExhausted &&
-    !dailyLimitReached;
+    !dailyLimitReached &&
+    !fixedTradeAmountOverRiskCap;
 
   // Profit the bot is keeping its hands off, when a budget is on.
   const protectedNote =
@@ -182,6 +194,7 @@ export function AutoTradeReadiness({
     // The balance may fund fewer positions than the user allows.
     const partialNote =
       sizing.status === "ready" &&
+      g?.fixedTradeAmountSol == null &&
       !atServerCap &&
       sizing.slotsUsed < sizing.freeSlots
         ? ` Your balance only funds ${sizing.slotsUsed} of the ${sizing.freeSlots} free slots at the minimum size, so you'll hold fewer than ${maxOpenPositions} positions until you top up.`
@@ -203,8 +216,12 @@ export function AutoTradeReadiness({
                 budgetAtWork
                   ? "Your trading budget is fully at work"
                   : `All ${slotsFull} position slots are in use`
-              } — a new position opens when one closes.${protectedNote}`
-            : `${partialNote}${protectedNote}`.trim() || undefined
+              } — a new position opens when one closes.${protectedNote}${
+                tradeCountNote ? ` ${tradeCountNote}` : ""
+              }`
+            : `${partialNote}${protectedNote} ${
+                tradeCountNote || ""
+              }`.trim() || undefined
         }
         className="inline-flex items-center gap-1.5 text-xs text-green-400 bg-green-900/20 border border-green-500/30 rounded-full px-3 py-1"
       >
@@ -215,14 +232,22 @@ export function AutoTradeReadiness({
       <div className="flex items-center gap-2 text-sm text-green-400 bg-green-900/20 border border-green-500/30 rounded-lg px-4 py-3">
         <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
         {atCapacity
-          ? `${atCapacityText}${protectedNote}`
-          : `Auto-trade is on and your wallet is funded — the bot can trade for you.${nextNote}${protectedNote}`}
+          ? `${atCapacityText}${protectedNote}${
+              tradeCountNote ? ` ${tradeCountNote}` : ""
+            }`
+          : `Auto-trade is on and your wallet is funded — the bot can trade for you.${nextNote}${protectedNote}${
+              tradeCountNote ? ` ${tradeCountNote}` : ""
+            }`}
       </div>
     );
   }
 
   // Problems fixed in Trading Settings vs. by depositing SOL.
-  const needsSettings = !autoTradeEnabled || capReached || budgetExhausted;
+  const needsSettings =
+    !autoTradeEnabled ||
+    capReached ||
+    budgetExhausted ||
+    fixedTradeAmountOverRiskCap;
 
   const missing: string[] = [];
   if (lowBalance) {
@@ -262,7 +287,21 @@ export function AutoTradeReadiness({
       )}% of ${maxDailyLossPct}%), so the bot has paused new buys — open positions are still managed`
     );
   }
-  const reasonText = `The bot won't trade for you yet — ${missing.join(" and ")}.`;
+  if (fixedTradeAmountOverRiskCap) {
+    const maxSize =
+      ((balanceSol + (deployedSol ?? 0)) *
+        (g?.maxRiskPerTradePct ?? 2)) /
+      100;
+    missing.push(
+      `lower the fixed trade size to at most ${formatNumber(
+        maxSize,
+        4
+      )} SOL or raise the per-trade size cap`
+    );
+  }
+  const reasonText = `The bot won't trade for you yet — ${missing.join(
+    " and "
+  )}.${tradeCountNote ? ` ${tradeCountNote}` : ""}`;
 
   // Say WHAT is stopping it right on the pill, not just "not active" — a
   // user who hit their trade limit shouldn't have to hover to find out.
@@ -274,6 +313,8 @@ export function AutoTradeReadiness({
         ? "Trading budget used up"
         : dailyLimitReached
           ? "Daily loss limit reached"
+          : fixedTradeAmountOverRiskCap
+            ? "Fixed trade exceeds risk cap"
           : lowBalance
             ? "Low balance"
             : "Auto-trade not active";

@@ -1529,6 +1529,34 @@ export async function saveUserSettings(
   return result!;
 }
 
+const GLOBAL_AUTO_TRADE_SETTING_ID = "global-auto-trade";
+
+export async function getGlobalAutoTradeEnabled(): Promise<boolean> {
+  if (!db) await connect();
+  const setting = await db!
+    .collection<{ _id: string; enabled: boolean }>("systemSettings")
+    .findOne({ _id: GLOBAL_AUTO_TRADE_SETTING_ID });
+  return setting?.enabled ?? true;
+}
+
+export async function setGlobalAutoTradeEnabled(
+  enabled: boolean,
+): Promise<void> {
+  if (!db) await connect();
+  await db!
+    .collection<{ _id: string; enabled: boolean; updatedAt: Date }>(
+      "systemSettings",
+    )
+    .updateOne(
+      { _id: GLOBAL_AUTO_TRADE_SETTING_ID },
+      {
+        $set: { enabled, updatedAt: new Date() },
+        $setOnInsert: { _id: GLOBAL_AUTO_TRADE_SETTING_ID },
+      },
+      { upsert: true },
+    );
+}
+
 export async function close() {
   if (client) {
     await client.close();
@@ -1576,5 +1604,7 @@ export default {
   blacklistToken,
   getUserSettings,
   saveUserSettings,
+  getGlobalAutoTradeEnabled,
+  setGlobalAutoTradeEnabled,
   close,
 };

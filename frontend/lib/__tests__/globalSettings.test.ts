@@ -176,10 +176,10 @@ describe("toSettingsPayload", () => {
     expect(p.maxTotalTrades).toBeNull();
   });
 
-  it("sends the open-position count, and no SOL trade amount", () => {
+  it("sends the open-position count and leaves fixed sizing disabled by default", () => {
     const p = toSettingsPayload(valid({ maxOpenPositions: 4 }));
     expect(p.maxOpenPositions).toBe(4);
-    expect("maxTradeAmountSol" in p).toBe(false);
+    expect(p.fixedTradeAmountSol).toBeNull();
   });
 
   it("converts percentages back to decimals the server accepts", () => {
@@ -203,6 +203,53 @@ describe("toSettingsPayload", () => {
     );
     expect(p.takeProfitPct).toBe(0.07);
     expect(p.stopLossPct).toBe(0.3);
+  });
+
+  it("round-trips execution and risk settings", () => {
+    const payload = toSettingsPayload(
+      valid({
+        fixedTradeAmountSol: 0.25,
+        slippagePct: 1.25,
+        priorityFeeSol: 0.00005,
+        maxDailyLossPct: 5,
+        maxRiskPerTradePct: 1.5,
+      })
+    );
+    expect(payload.fixedTradeAmountSol).toBe(0.25);
+    expect(payload.slippageBps).toBe(125);
+    expect(payload.priorityFeeSol).toBe(0.00005);
+    expect(payload.maxDailyLossPct).toBe(5);
+    expect(payload.maxRiskPerTradePct).toBe(1.5);
+    expect(
+      toSettingsPayload(
+        formFromSettings({
+          fixedTradeAmountSol: 0.25,
+          slippageBps: 125,
+          priorityFeeSol: 0.00005,
+          maxDailyLossPct: 5,
+          maxRiskPerTradePct: 1.5,
+        })
+      )
+    ).toEqual(payload);
+  });
+});
+
+describe("execution and risk settings validation", () => {
+  it("rejects invalid fixed amount, slippage, priority fee, and risk limits", () => {
+    const errors = validateGlobalSettings(
+      valid({
+        fixedTradeAmountSol: 0,
+        slippagePct: 0,
+        priorityFeeSol: 0.02,
+        maxDailyLossPct: 101,
+        maxRiskPerTradePct: 0,
+      })
+    );
+    expect(errors.fixedTradeAmountSol).toBeTruthy();
+    expect(errors.slippagePct).toBeTruthy();
+    expect(errors.priorityFeeSol).toBeTruthy();
+    expect(errors.maxDailyLossPct).toBeTruthy();
+    expect(errors.maxRiskPerTradePct).toBeTruthy();
   });
 });
 

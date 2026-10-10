@@ -51,6 +51,9 @@ router.get("/:ownerWallet", async (req: Request, res: Response) => {
     const rawBudget = traderConfig?.globalSettings?.tradingBudgetSol;
     const tradingBudgetSol =
       typeof rawBudget === "number" && rawBudget > 0 ? rawBudget : null;
+    const maxDailyLossPct =
+      traderConfig?.globalSettings?.maxDailyLossPct ??
+      Number(process.env.MAX_DAILY_LOSS_PCT ?? 6);
     const { deployedSol, realizedLossSol } =
       tradingBudgetSol !== null
         ? await dbService.getBudgetState(
@@ -76,7 +79,11 @@ router.get("/:ownerWallet", async (req: Request, res: Response) => {
       serverMaxOpenPositions: number;
     } | null = null;
     try {
-      const r = await getRiskStatus(ownerWallet!, result?.hotWalletPublicKey);
+      const r = await getRiskStatus(
+        ownerWallet!,
+        result?.hotWalletPublicKey,
+        { maxDailyLossPct },
+      );
       risk = {
         dailyLossPct: r.dailyLossPct,
         maxDailyLossPct: r.maxDailyLossPct,
@@ -99,6 +106,8 @@ router.get("/:ownerWallet", async (req: Request, res: Response) => {
       protectedProfitSol,
       minTradeSol,
       feeReserveSol,
+      fixedTradeAmountSol:
+        traderConfig?.globalSettings?.fixedTradeAmountSol ?? null,
       // Enough to open every one of the trader's slots at the minimum size.
       minBalanceForAutoTradeSol: minBalanceForSlots(
         maxOpenPositions,

@@ -8,12 +8,85 @@ import userWalletService from "../services/userWallet.service.js";
 import { loadKeypairFromEnv } from "../services/solana.service.js";
 import { emitToWalletOrGlobal } from "../utils/walletSocket.js";
 import { getLogger } from "../utils/logger.js";
+import { verifyWalletAuth } from "../utils/walletAuth.js";
 
 const OPERATOR_WALLET =
   process.env.ADMIN_WALLET_PUBKEY || process.env.WALLET_PUBLIC_KEY || "";
 
 const router = express.Router();
 const log = getLogger("admin.route");
+
+/**
+ * GET /api/admin/auto-trade
+ * Public status lets the dashboard show this control only to the operator.
+ */
+router.get("/auto-trade", async (_req, res) => {
+  try {
+    const enabled = await dbService.getGlobalAutoTradeEnabled();
+    return res.json({
+      success: true,
+      enabled,
+      operatorWallet: OPERATOR_WALLET || null,
+    });
+  } catch (err: any) {
+    log.error({ err: err?.message }, "Failed to load global auto-trade state");
+    return res.status(503).json({
+      success: false,
+      error: "Global auto-trade status is unavailable",
+    });
+  }
+});
+
+/**
+ * POST /api/admin/auto-trade
+ * body: { enabled, walletAuthTimestamp, walletAuthSignature }
+ * Only the configured operator wallet can pause/resume auto-buys globally.
+ * Existing positions are not sold and continue to be monitored.
+ */
+router.post("/auto-trade", async (req, res) => {
+  try {
+    const { enabled, walletAuthTimestamp, walletAuthSignature } =
+      req.body ?? {};
+    if (typeof enabled !== "boolean") {
+      return res
+        .status(400)
+        .json({ success: false, error: "enabled must be true or false" });
+    }
+    if (!OPERATOR_WALLET) {
+      return res.status(503).json({
+        success: false,
+        error: "Global auto-trade control has no configured operator wallet",
+      });
+    }
+
+    const verifiedWallet = verifyWalletAuth({
+      wallet: OPERATOR_WALLET,
+      timestamp: walletAuthTimestamp,
+      signature: walletAuthSignature,
+    });
+    if (!verifiedWallet) {
+      return res.status(401).json({
+        success: false,
+        error: "A valid signature from the configured operator wallet is required",
+      });
+    }
+
+    await dbService.setGlobalAutoTradeEnabled(enabled);
+    const io = (req.app as any).locals.io;
+    io?.emit("globalAutoTrade:updated", { enabled });
+    log.warn(
+      { enabled, operatorWallet: verifiedWallet },
+      enabled ? "Global auto-buys resumed" : "Global auto-buys paused",
+    );
+    return res.json({ success: true, enabled });
+  } catch (err: any) {
+    log.error({ err: err?.message }, "Failed to update global auto-trade state");
+    return res.status(500).json({
+      success: false,
+      error: "Failed to update global auto-trade state",
+    });
+  }
+});
 
 /**
  * POST /api/admin/force-sell

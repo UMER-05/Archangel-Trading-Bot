@@ -7,6 +7,7 @@ import { useTrade } from "@hooks/useTrade";
 import { useWallet } from "@hooks/useWallet";
 import { useWallet as useSolanaWallet } from "@solana/wallet-adapter-react";
 import { useSolPrice } from "@hooks/useSolPrice";
+import { fetcher } from "@lib/utils";
 import {
   X,
   Target,
@@ -17,6 +18,7 @@ import {
   Zap,
 } from "lucide-react";
 import { toast } from "react-hot-toast";
+import { EXIT_FILL_NOTE } from "@lib/globalSettings";
 
 interface TokenConfigModalProps {
   isOpen: boolean;
@@ -48,12 +50,13 @@ export function TokenConfigModal({
   const [formData, setFormData] = useState({
     triggerMarketCapSol: 0,
     takeProfitPct: 10,
-    stopLossPct: 2,
+    stopLossPct: 30,
     autoTrade: false,
     useCustomConfig: false,
   });
 
   const [effectiveConfig, setEffectiveConfig] = useState<any>(null);
+  const [manualTradeAmountSol, setManualTradeAmountSol] = useState(0.1);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -63,28 +66,40 @@ export function TokenConfigModal({
       if (tokenConfig) {
         setFormData({
           triggerMarketCapSol: tokenConfig.triggerMarketCapSol ?? 0,
-          takeProfitPct: (tokenConfig.takeProfitPct ?? 0.1) * 100,
-          stopLossPct: (tokenConfig.stopLossPct ?? 0.02) * 100,
+          takeProfitPct:
+            (tokenConfig.takeProfitPct ??
+              config?.globalSettings?.takeProfitPct ??
+              0.1) * 100,
+          stopLossPct:
+            (tokenConfig.stopLossPct ??
+              config?.globalSettings?.stopLossPct ??
+              0.3) * 100,
           autoTrade: tokenConfig.autoTrade ?? false,
           useCustomConfig: true,
         });
       } else {
         setFormData({
           triggerMarketCapSol: token.currentMarketCapSol ?? 0,
-          takeProfitPct: 10,
-          stopLossPct: 2,
+          takeProfitPct: (config?.globalSettings?.takeProfitPct ?? 0.1) * 100,
+          stopLossPct: (config?.globalSettings?.stopLossPct ?? 0.3) * 100,
           autoTrade: false,
           useCustomConfig: false,
         });
       }
 
       // Load effective config (what will actually be used)
+      let active = true;
       getEffectiveConfig(token.mint).then((cfg: any) => {
+        if (!active || !cfg) return;
         setEffectiveConfig(cfg);
+        setManualTradeAmountSol(cfg.fixedTradeAmountSol ?? 0.1);
       });
+      return () => {
+        active = false;
+      };
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, token.mint]);
+  }, [isOpen, token.mint, config]);
 
   const handleSave = async () => {
     setSaving(true);
@@ -153,17 +168,42 @@ export function TokenConfigModal({
         await handleSave();
       }
 
-      // Trade size comes from the wallet's global "Max Trade Amount"
-      // setting (see trader-config-modal.tsx) — this modal has no amount
-      // input of its own.
-      const maxTradeAmountSol = effectiveConfig?.maxTradeAmountSol;
-      if (!Number.isFinite(maxTradeAmountSol) || maxTradeAmountSol <= 0) {
-        toast.error(
-          "Set a Max Trade Amount in Global Auto-Trade Rules before trading."
-        );
+      if (
+        type === "buy" &&
+        (!Number.isFinite(manualTradeAmountSol) || manualTradeAmountSol <= 0)
+      ) {
+        toast.error("Enter a positive buy amount in SOL.");
         return;
       }
-      const amountLamports = Math.floor(maxTradeAmountSol * 1e9);
+      let amountLamports: number | string;
+      if (type === "buy") {
+        amountLamports = Math.floor(manualTradeAmountSol * 1e9);
+      } else {
+        const walletAddress = solanaWallet.publicKey?.toBase58();
+        if (!walletAddress) {
+          toast.error("Connect a wallet to check its token balance.");
+          return;
+        }
+        const balance = await fetcher<{
+          success: boolean;
+          data?: { raw: string };
+        }>(
+          `/api/trade/token-balance?wallet=${encodeURIComponent(
+            walletAddress
+          )}&mint=${encodeURIComponent(token.mint)}`
+        );
+        const rawAmount = balance?.data?.raw;
+        if (
+          !balance?.success ||
+          !rawAmount ||
+          !/^\d+$/.test(rawAmount) ||
+          /^0+$/.test(rawAmount)
+        ) {
+          toast.error(`No ${token.symbol} balance to sell.`);
+          return;
+        }
+        amountLamports = rawAmount;
+      }
 
       // Execute the trade
       console.log("🚀 Executing trade:", type, token.mint);
@@ -298,6 +338,26 @@ export function TokenConfigModal({
             </div>
           </div>
 
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-2">
+              Buy amount (SOL)
+            </label>
+            <input
+              type="number"
+              value={manualTradeAmountSol}
+              onChange={(e) =>
+                setManualTradeAmountSol(Number(e.target.value))
+              }
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white focus:outline-none focus:border-blue-500"
+              min="0"
+              step="0.001"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Defaults to your fixed trade size when configured; otherwise
+              enter the amount for this manual buy.
+            </p>
+          </div>
+
           {/* Use Custom Config Toggle */}
           <div className="flex items-center justify-between bg-blue-900/20 border border-blue-800 rounded-lg p-4">
             <div>
@@ -410,6 +470,7 @@ export function TokenConfigModal({
                   </p>
                 </div>
               </div>
+              <p className="text-xs text-gray-500">{EXIT_FILL_NOTE}</p>
 
               {/* Auto Trade */}
               <div className="flex items-center">

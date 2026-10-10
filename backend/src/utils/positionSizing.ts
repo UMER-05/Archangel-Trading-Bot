@@ -59,6 +59,8 @@ export interface SizingInput {
   deployedSol?: number | undefined;
   /** SOL lost on positions closed since the budget was set (see positionState). */
   realizedLossSol?: number | undefined;
+  /** Exact buy size; unset keeps the existing balance/free-slots split. */
+  fixedTradeAmountSol?: number | undefined;
 }
 
 /** What is capping the size: the wallet's cash, or the trading budget. */
@@ -215,6 +217,47 @@ export function computePositionSize(input: SizingInput): SizingResult {
   const spendableSol = Math.min(cashSpendable, budgetRoom);
   const limitedBy: LimitedBy =
     budgetRoom < cashSpendable ? "budget" : "balance";
+
+  if (
+    typeof input.fixedTradeAmountSol === "number" &&
+    Number.isFinite(input.fixedTradeAmountSol) &&
+    input.fixedTradeAmountSol > 0
+  ) {
+    if (input.fixedTradeAmountSol < minTradeSol) {
+      return {
+        ok: false,
+        code: "LOW_BALANCE",
+        freeSlots,
+        spendableSol,
+        neededSol: feeReserveSol + minTradeSol,
+        limitedBy,
+      };
+    }
+    if (spendableSol + 1e-9 < input.fixedTradeAmountSol) {
+      return {
+        ok: false,
+        code: "LOW_BALANCE",
+        freeSlots,
+        spendableSol,
+        neededSol: feeReserveSol + input.fixedTradeAmountSol,
+        limitedBy,
+        ...(limitedBy === "budget" && budget !== null
+          ? {
+              neededBudgetSol:
+                deployedSol + realizedLossSol + input.fixedTradeAmountSol,
+            }
+          : {}),
+      };
+    }
+    return {
+      ok: true,
+      buySol: input.fixedTradeAmountSol,
+      slotsUsed: 1,
+      freeSlots,
+      spendableSol,
+      limitedBy,
+    };
+  }
 
   // How many minimum-size positions the money can actually fund. The epsilon
   // stops 0.03 / 0.01 = 2.9999999999999996 from costing a whole slot.

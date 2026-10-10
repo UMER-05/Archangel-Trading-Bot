@@ -2,14 +2,14 @@
  * Risk Management Engine
  *
  * POSITION SIZING: Risk Engine
- * - Max 2% risk per trade
+ * - Max trade size is capped at 2% of portfolio equity for fixed/manual buys
  * - No arbitrary cap on simultaneous open positions by default (was
  *   hardcoded to 3 — that number had no basis in an actual risk model, it
  *   just silently stopped the bot from taking new qualifying trades once 3
- *   were open). Real protection against overexposure still comes from the
- *   per-trade risk-percent sizing and the daily-loss circuit breaker below,
- *   both of which remain fully enforced. Set MAX_OPEN_POSITIONS in .env if
- *   you actually want a cap.
+ *   were open). The daily-loss circuit breaker applies to every buy; the
+ *   per-trade size cap applies to fixed-size and manual buys. Balance/free-slot
+ *   auto-sizing retains its existing behavior. Set MAX_OPEN_POSITIONS in .env
+ *   if you actually want a server-wide cap.
  * - Max 6% daily loss
  * - Bot stops trading when limits hit
  */
@@ -53,12 +53,13 @@ export interface CanExecuteTradeOptions {
    */
   ownerWallet?: string;
   /**
-   * Apply the MAX_RISK_PER_TRADE_PCT cap (default true). Auto-buys sized by
-   * utils/positionSizing.ts (balance / free slots) turn this off: a slice of
-   * 1/N of the wallet is what the trader asked for, and a flat percentage cap
-   * would refuse it. The open-position and daily-loss limits still apply.
+   * Apply the per-trade cap (default true). Auto-buys using legacy
+   * balance/free-slot sizing turn this off to preserve that sizing behavior;
+   * fixed-size auto-buys and manual buys enforce the configured cap.
    */
   enforcePerTradeCap?: boolean;
+  maxDailyLossPct?: number;
+  maxRiskPerTradePct?: number;
 }
 
 export async function canExecuteTrade(
@@ -69,6 +70,10 @@ export async function canExecuteTrade(
   try {
     const ownerWallet = options.ownerWallet ?? walletAddress;
     const enforcePerTradeCap = options.enforcePerTradeCap ?? true;
+    const maxDailyLossPct =
+      options.maxDailyLossPct ?? MAX_DAILY_LOSS_PCT;
+    const maxRiskPerTradePct =
+      options.maxRiskPerTradePct ?? MAX_RISK_PER_TRADE_PCT;
 
     // Scoped to this specific wallet — each user's exposure/risk state must
     // be independent. Without an owner here, one user's open positions
@@ -110,9 +115,9 @@ export async function canExecuteTrade(
       portfolioValue > 0 ? (dailyLoss / portfolioValue) * 100 : 0;
 
     // Check max daily loss
-    if (dailyLossPct >= MAX_DAILY_LOSS_PCT) {
+    if (dailyLossPct >= maxDailyLossPct) {
       log.warn(
-        `Trade blocked: Max daily loss ${MAX_DAILY_LOSS_PCT}% reached (current: ${dailyLossPct.toFixed(
+        `Trade blocked: Max daily loss ${maxDailyLossPct}% reached (current: ${dailyLossPct.toFixed(
           2,
         )}%)`,
       );
@@ -122,7 +127,7 @@ export async function canExecuteTrade(
           1,
         )}% of the wallet's ${portfolioValue.toFixed(
           4,
-        )} SOL (limit ${MAX_DAILY_LOSS_PCT}%) — new buys resume tomorrow`,
+        )} SOL (limit ${maxDailyLossPct}%) — new buys resume tomorrow`,
         currentRisk: {
           openPositions,
           dailyLossPct,
@@ -133,7 +138,7 @@ export async function canExecuteTrade(
     }
 
     // Calculate max trade size (2% of portfolio)
-    const maxTradeSize = (portfolioValue * MAX_RISK_PER_TRADE_PCT) / 100;
+    const maxTradeSize = (portfolioValue * maxRiskPerTradePct) / 100;
 
     // Callers size trades as exactly `balance * riskPct` before calling here, so a
     // legitimate trade should land right at maxTradeSize — but that's a different
@@ -142,13 +147,13 @@ export async function canExecuteTrade(
     // A tiny relative tolerance absorbs that noise without loosening the real cap.
     if (enforcePerTradeCap && tradeAmountSol > maxTradeSize * (1 + 1e-6)) {
       log.warn(
-        `Trade blocked: Amount ${tradeAmountSol} SOL exceeds max ${MAX_RISK_PER_TRADE_PCT}% risk (${maxTradeSize.toFixed(
+        `Trade blocked: Amount ${tradeAmountSol} SOL exceeds max ${maxRiskPerTradePct}% risk (${maxTradeSize.toFixed(
           2,
         )} SOL)`,
       );
       return {
         allowed: false,
-        reason: `Trade size ${tradeAmountSol} SOL exceeds ${MAX_RISK_PER_TRADE_PCT}% max risk (${maxTradeSize.toFixed(
+        reason: `Trade size ${tradeAmountSol} SOL exceeds ${maxRiskPerTradePct}% max risk (${maxTradeSize.toFixed(
           2,
         )} SOL)`,
         currentRisk: {
@@ -164,7 +169,7 @@ export async function canExecuteTrade(
     log.info(
       `Risk check PASSED: ${tradeAmountSol} SOL trade allowed | Open: ${openPositions}/${MAX_OPEN_POSITIONS} | Daily Loss: ${dailyLossPct.toFixed(
         2,
-      )}%/${MAX_DAILY_LOSS_PCT}%`,
+      )}%/${maxDailyLossPct}%`,
     );
 
     return {
@@ -239,6 +244,7 @@ async function calculateDailyLoss(walletAddress: string): Promise<number> {
 export async function getRiskStatus(
   ownerWallet: string,
   hotWallet: string = ownerWallet,
+  limits: { maxDailyLossPct?: number } = {},
 ): Promise<{
   openPositions: number;
   maxOpenPositions: number;
@@ -248,6 +254,7 @@ export async function getRiskStatus(
   tradingAllowed: boolean;
   portfolioValue: number;
 }> {
+  const maxDailyLossPct = limits.maxDailyLossPct ?? MAX_DAILY_LOSS_PCT;
   const openPositions = await dbService.getOpenPositionCount(ownerWallet);
 
   // Same basis as canExecuteTrade: what the wallet owns (cash + open positions).
@@ -259,14 +266,14 @@ export async function getRiskStatus(
 
   const tradingAllowed =
     (MAX_OPEN_POSITIONS <= 0 || openPositions < MAX_OPEN_POSITIONS) &&
-    dailyLossPct < MAX_DAILY_LOSS_PCT;
+    dailyLossPct < maxDailyLossPct;
 
   return {
     openPositions,
     maxOpenPositions: MAX_OPEN_POSITIONS,
     dailyLossSol,
     dailyLossPct,
-    maxDailyLossPct: MAX_DAILY_LOSS_PCT,
+    maxDailyLossPct,
     tradingAllowed,
     portfolioValue,
   };

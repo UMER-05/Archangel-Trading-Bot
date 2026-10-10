@@ -36,6 +36,7 @@ const PASSTHROUGH_EVENTS = [
   // Watchlist (watchlist.route.ts) — broadcast after every add/remove so
   // useWatchlist.ts stays in sync across tabs without polling
   "watchlist:update",
+  "globalAutoTrade:updated",
   // Set-alert doesn't re-broadcast the full list (unlike add/remove above),
   // so useWatchlist.ts refreshes on this instead of missing the update
   "priceAlert:set",

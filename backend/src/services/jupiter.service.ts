@@ -266,13 +266,12 @@ class JupiterService {
   async buildSwapTransaction(
     quote: JupiterQuote,
     userPublicKey: string,
+    priorityFeeSol?: number,
   ): Promise<{ swapTransaction: string; lastValidBlockHeight: number } | null> {
     try {
       const priorityFeeLamports = Math.max(
-        Math.round(
-          ENV.JUPITER_PRIORITY_FEE > 0 ? ENV.JUPITER_PRIORITY_FEE * 1e9 : 0,
-        ),
-        1,
+        Math.round((priorityFeeSol ?? ENV.JUPITER_PRIORITY_FEE) * 1e9),
+        0,
       );
 
       const { data } = await withRetry(
@@ -284,7 +283,9 @@ class JupiterService {
               userPublicKey,
               wrapAndUnwrapSol: true,
               dynamicComputeUnitLimit: true,
-              prioritizationFeeLamports: priorityFeeLamports || "auto",
+              ...(priorityFeeLamports > 0
+                ? { prioritizationFeeLamports: priorityFeeLamports }
+                : {}),
             },
             { headers: this.headers(), timeout: 15000 },
           ),
@@ -354,12 +355,14 @@ class JupiterService {
     userPublicKey,
     slippageBps = 500,
     signer,
+    priorityFeeSol,
   }: {
     inputMint: string;
     outputMint: string;
     amount: number | string;
     userPublicKey: string;
     slippageBps?: number;
+    priorityFeeSol?: number;
     // Per-user custodial trading: the wallet that actually signs must match
     // userPublicKey (Jupiter builds the transaction's token accounts/fee
     // payer around userPublicKey, so a mismatched signer would fail on-chain
@@ -379,7 +382,11 @@ class JupiterService {
         return { success: false, error: "No Jupiter route/quote available" };
       }
 
-      const built = await this.buildSwapTransaction(quote, userPublicKey);
+      const built = await this.buildSwapTransaction(
+        quote,
+        userPublicKey,
+        priorityFeeSol,
+      );
       if (!built) {
         return {
           success: false,
@@ -567,6 +574,7 @@ export const executeJupiterSwap = (params: {
   amount: number | string;
   userPublicKey: string;
   slippageBps?: number;
+  priorityFeeSol?: number;
   signer?: Keypair;
 }) => jupiterService.executeSwap(params);
 
@@ -577,8 +585,13 @@ export const executeJupiterSwap = (params: {
 export const buildJupiterSwapPayload = async (
   quote: JupiterQuote,
   userPublicKey: string,
+  priorityFeeSol?: number,
 ) => {
-  const built = await jupiterService.buildSwapTransaction(quote, userPublicKey);
+  const built = await jupiterService.buildSwapTransaction(
+    quote,
+    userPublicKey,
+    priorityFeeSol,
+  );
   if (!built) throw new Error("Failed to build Jupiter swap transaction");
   return { swapTransaction: built.swapTransaction };
 };

@@ -43,7 +43,10 @@ export interface LaunchMetrics {
 
 export function launchMetricsWithinLimits(
   metrics: LaunchMetrics,
-  config: Awaited<ReturnType<typeof getEffectiveConfig>>,
+  config: Pick<
+    Awaited<ReturnType<typeof getEffectiveConfig>>,
+    "minMarketCapSol"
+  >,
 ): boolean {
   return (
     Number.isFinite(metrics.marketCapSOL) &&
@@ -129,6 +132,10 @@ export async function isAutoTradeCurrentlyEnabled(
  */
 export async function getEligibleWallets(): Promise<WalletContext[]> {
   const eligible: WalletContext[] = [];
+  if (!(await dbService.getGlobalAutoTradeEnabled())) {
+    LOG.warn("Global auto-trade is paused; no wallets are eligible");
+    return eligible;
+  }
 
   // Operator wallet: eligible from this function's point of view unless it
   // has explicitly disabled auto-trade (Stop Auto Trade) or hit its own Max

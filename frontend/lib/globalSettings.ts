@@ -39,6 +39,13 @@ export interface GlobalSettingsForm {
   tradingBudgetSol: number | "";
   /** "" = unlimited. */
   maxTotalTrades: number | "";
+  /** Blank keeps the existing balance/free-slots sizing behavior. */
+  fixedTradeAmountSol: number | "";
+  /** Percent typed by the user, converted to basis points for Jupiter. */
+  slippagePct: number;
+  priorityFeeSol: number;
+  maxDailyLossPct: number;
+  maxRiskPerTradePct: number;
 }
 
 export type GlobalSettingsErrors = Partial<
@@ -46,7 +53,7 @@ export type GlobalSettingsErrors = Partial<
 >;
 
 export const DEFAULT_GLOBAL_SETTINGS_FORM: GlobalSettingsForm = {
-  minMarketCapSol: 5,
+  minMarketCapSol: 3,
   takeProfitPct: 10,
   stopLossPct: 30,
   minSecondsSinceLaunch: "",
@@ -56,12 +63,18 @@ export const DEFAULT_GLOBAL_SETTINGS_FORM: GlobalSettingsForm = {
   budgetEnabled: false,
   tradingBudgetSol: "",
   maxTotalTrades: "",
+  fixedTradeAmountSol: "",
+  slippagePct: 10,
+  priorityFeeSol: 0.00003,
+  maxDailyLossPct: 6,
+  maxRiskPerTradePct: 2,
 };
 
 export const MAX_LAUNCH_AGE_SECONDS = 30 * 24 * 3600;
 export const MAX_TOTAL_TRADES_LIMIT = 100000;
 export const MAX_OPEN_POSITIONS_LIMIT = 50;
 export const MAX_TRADING_BUDGET_SOL = 1_000_000;
+export const MIN_FIXED_TRADE_SOL = 0.003;
 // The backend checks a token's launch age once, a few seconds to ~40s after
 // the pool appears, and never comes back to it. A minimum age above this
 // therefore skips almost every token.
@@ -95,6 +108,17 @@ export function formFromSettings(
         ? g.tradingBudgetSol
         : "",
     maxTotalTrades: g?.maxTotalTrades ?? "",
+    fixedTradeAmountSol:
+      typeof g?.fixedTradeAmountSol === "number" &&
+      g.fixedTradeAmountSol > 0
+        ? g.fixedTradeAmountSol
+        : "",
+    slippagePct:
+      g?.slippageBps != null ? round(g.slippageBps / 100, 2) : d.slippagePct,
+    priorityFeeSol: g?.priorityFeeSol ?? d.priorityFeeSol,
+    maxDailyLossPct: g?.maxDailyLossPct ?? d.maxDailyLossPct,
+    maxRiskPerTradePct:
+      g?.maxRiskPerTradePct ?? d.maxRiskPerTradePct,
   };
 }
 
@@ -174,6 +198,40 @@ export function validateGlobalSettings(
     }
   }
 
+  if (f.fixedTradeAmountSol !== "") {
+    const amount = Number(f.fixedTradeAmountSol);
+    if (
+      !Number.isFinite(amount) ||
+      amount < MIN_FIXED_TRADE_SOL ||
+      amount > 1_000_000
+    ) {
+      errors.fixedTradeAmountSol =
+        `Enter at least ${MIN_FIXED_TRADE_SOL} SOL, or leave blank to split by free slots`;
+    }
+  }
+  if (
+    !Number.isFinite(f.slippagePct) ||
+    f.slippagePct < 0.1 ||
+    f.slippagePct > 100
+  ) {
+    errors.slippagePct = "Enter slippage from 0.1% to 100%";
+  }
+  if (
+    !Number.isFinite(f.priorityFeeSol) ||
+    f.priorityFeeSol < 0 ||
+    f.priorityFeeSol > 0.01
+  ) {
+    errors.priorityFeeSol = "Enter a priority fee from 0 to 0.01 SOL";
+  }
+  for (const [field, value] of [
+    ["maxDailyLossPct", f.maxDailyLossPct],
+    ["maxRiskPerTradePct", f.maxRiskPerTradePct],
+  ] as const) {
+    if (!Number.isFinite(value) || value < 0.1 || value > 100) {
+      errors[field] = "Enter a risk limit from 0.1% to 100%";
+    }
+  }
+
   return errors;
 }
 
@@ -203,7 +261,7 @@ export function stopLossWarning(f: GlobalSettingsForm): string | null {
  * loss are market orders triggered by a price check, not limit orders.
  */
 export const EXIT_FILL_NOTE =
-  "Checked about every 5 seconds and sold at market: the actual fill can differ from these levels (price movement between checks, slippage, thin liquidity).";
+  "No on-chain stop order is placed. Levels are checked about every 5 seconds and sold at market while the bot is running; price movement, slippage, thin liquidity, or downtime can change the fill or delay an exit.";
 
 /** A non-blocking warning: valid, but very likely not what the user wants. */
 export function launchAgeWarning(f: GlobalSettingsForm): string | null {
@@ -230,5 +288,11 @@ export function toSettingsPayload(f: GlobalSettingsForm): GlobalSettings {
         : null,
     // null explicitly clears a previously-set cap (unlimited).
     maxTotalTrades: f.maxTotalTrades === "" ? null : f.maxTotalTrades,
+    fixedTradeAmountSol:
+      f.fixedTradeAmountSol === "" ? null : Number(f.fixedTradeAmountSol),
+    slippageBps: Math.round(f.slippagePct * 100),
+    priorityFeeSol: f.priorityFeeSol,
+    maxDailyLossPct: f.maxDailyLossPct,
+    maxRiskPerTradePct: f.maxRiskPerTradePct,
   };
 }

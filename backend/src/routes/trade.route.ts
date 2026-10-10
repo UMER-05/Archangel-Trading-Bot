@@ -14,9 +14,23 @@ import { Connection, VersionedTransaction } from "@solana/web3.js";
 import { validateTradeOpportunity } from "../services/tradeValidation.service.js";
 import { getTokenBalance } from "../services/solana.service.js";
 import { getOnChainMintSupply } from "../services/tokenSafetyChecks.service.js";
+import { canExecuteTrade } from "../services/riskManagement.service.js";
 
 const logger = getLogger("trade.route");
 const router = express.Router();
+const MAX_RAW_AMOUNT = (1n << 64n) - 1n;
+
+function isPositiveRawAmount(value: unknown): value is number | string {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value > 0;
+  }
+  if (typeof value !== "string" || !/^\d+$/.test(value)) {
+    return false;
+  }
+
+  const amount = BigInt(value);
+  return amount > 0n && amount <= MAX_RAW_AMOUNT;
+}
 
 /**
  * GET /api/trade/manual-buy-candidates?limit=40
@@ -176,7 +190,7 @@ router.post("/prepare", async (req, res) => {
     const { type, inputMint, outputMint, wallet, amountLamports, slippageBps } =
       req.body;
 
-    if (!type || !outputMint || !wallet || !amountLamports) {
+    if (!type || !outputMint || !wallet || !isPositiveRawAmount(amountLamports)) {
       return res.status(400).json({
         success: false,
         message: "Missing required parameters",
@@ -271,11 +285,37 @@ router.post("/prepare", async (req, res) => {
       `Preparing Jupiter ${type} trade for token ${tokenMint.slice(0, 8)}...`,
     );
 
+    const effectiveSlippageBps = slippageBps ?? config.slippageBps;
+    if (
+      !Number.isInteger(effectiveSlippageBps) ||
+      effectiveSlippageBps < 10 ||
+      effectiveSlippageBps > 10_000
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Slippage must be a whole number from 10 to 10000 basis points",
+      });
+    }
+
+    if (type === "buy") {
+      const risk = await canExecuteTrade(Number(amountLamports) / 1e9, wallet, {
+        ownerWallet: wallet,
+        maxDailyLossPct: config.maxDailyLossPct,
+        maxRiskPerTradePct: config.maxRiskPerTradePct,
+      });
+      if (!risk.allowed) {
+        return res.status(400).json({
+          success: false,
+          message: risk.reason || "Trade blocked by risk limits",
+        });
+      }
+    }
+
     const quote = await getJupiterQuote(
       finalInputMint,
       finalOutputMint,
       amountLamports,
-      slippageBps || 100,
+      effectiveSlippageBps,
     );
 
     if (!quote) {
@@ -300,7 +340,11 @@ router.post("/prepare", async (req, res) => {
     }
 
     // Build unsigned transaction
-    const { swapTransaction } = await buildJupiterSwapPayload(quote, wallet);
+    const { swapTransaction } = await buildJupiterSwapPayload(
+      quote,
+      wallet,
+      config.priorityFeeSol,
+    );
 
     logger.info(`Prepared Jupiter ${type} transaction for ${wallet}`);
 
@@ -315,6 +359,7 @@ router.post("/prepare", async (req, res) => {
           inAmount: quote.inAmount,
           slippageBps: quote.slippageBps,
         },
+        slippageBps: quote.slippageBps,
       },
     });
   } catch (err: any) {
@@ -345,8 +390,7 @@ router.post("/confirm", async (req, res) => {
       (type !== "buy" && type !== "sell") ||
       !token ||
       !wallet ||
-      !Number.isInteger(amountLamports) ||
-      amountLamports <= 0
+      !isPositiveRawAmount(amountLamports)
     ) {
       return res.status(400).json({
         success: false,
@@ -358,6 +402,19 @@ router.post("/confirm", async (req, res) => {
       return res.status(400).json({
         success: false,
         message: "Signed transaction required for Jupiter trades",
+      });
+    }
+
+    const effectiveConfig = await getEffectiveConfig(wallet, token);
+    const effectiveSlippageBps = slippageBps ?? effectiveConfig.slippageBps;
+    if (
+      !Number.isInteger(effectiveSlippageBps) ||
+      effectiveSlippageBps < 10 ||
+      effectiveSlippageBps > 10_000
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Slippage must be a whole number from 10 to 10000 basis points",
       });
     }
 
@@ -433,12 +490,13 @@ router.post("/confirm", async (req, res) => {
           quoteInputMint,
           quoteOutputMint,
           amountLamports,
-          slippageBps || 500,
+          effectiveSlippageBps,
         ),
         getOnChainMintSupply(token),
       ]);
       if (priceQuote?.outAmount) {
-        const solAmount = amountLamports / 1e9;
+        const amountForEstimate = Number(amountLamports);
+        const solAmount = amountForEstimate / 1e9;
         const tokenDecimals = supplyInfo.available ? supplyInfo.decimals : 9;
         const tokenAmount = Number(priceQuote.outAmount) / 10 ** tokenDecimals;
         price =
@@ -458,7 +516,10 @@ router.post("/confirm", async (req, res) => {
         type === "buy" ? "So11111111111111111111111111111111111111112" : token,
       outputMint:
         type === "buy" ? token : "So11111111111111111111111111111111111111112",
-      amount: amountLamports,
+      // TradeRecord stores amounts as numbers. Keep the raw amount as a
+      // string through Jupiter quoting, then convert only for this legacy
+      // approximate reporting record; the signed transaction remains exact.
+      amount: Number(amountLamports),
       price,
       pnl,
       wallet: actualSigner || wallet || "unknown",

@@ -107,6 +107,10 @@ export const RiskManagementPanel: React.FC = () => {
           feeReserveSol,
           budgetSol: budgetForPreview,
           deployedSol: deployedSol ?? 0,
+          fixedTradeAmountSol:
+            formData.fixedTradeAmountSol === ""
+              ? undefined
+              : Number(formData.fixedTradeAmountSol),
           // Losses already realized only count toward the SAVED budget; a
           // different amount typed here starts a fresh tally.
           realizedLossSol:
@@ -115,7 +119,13 @@ export const RiskManagementPanel: React.FC = () => {
               : 0,
         })
       : null;
-  const sizingNote = describeSizing(sizing, balanceSol);
+  const sizingNote = describeSizing(
+    sizing,
+    balanceSol,
+    formData.fixedTradeAmountSol === ""
+      ? null
+      : Number(formData.fixedTradeAmountSol)
+  );
   const nextBuySol = sizing?.status === "ready" ? sizing.buySol : null;
 
   const handleSave = async () => {
@@ -195,6 +205,35 @@ export const RiskManagementPanel: React.FC = () => {
                 {errors.maxOpenPositions}
               </p>
             )}
+          </div>
+
+          {/* Fixed position size; blank preserves balance/free-slot splitting. */}
+          <div className="p-2.5 bg-base-300 rounded-lg">
+            <label className="text-xs text-gray-400 mb-0.5 block">
+              Fixed SOL per trade (optional)
+            </label>
+            <input
+              type="number"
+              value={formData.fixedTradeAmountSol}
+              onChange={(e) =>
+                setField(
+                  "fixedTradeAmountSol",
+                  e.target.value === "" ? "" : Number(e.target.value)
+                )
+              }
+              className={INPUT_CLASS}
+              min="0.003"
+              step="0.001"
+              placeholder="Split balance across free slots"
+            />
+            {errors.fixedTradeAmountSol && (
+              <p className="text-xs text-red-500 mt-0.5">
+                {errors.fixedTradeAmountSol}
+              </p>
+            )}
+            <p className="text-[11px] text-gray-500 mt-0.5">
+              Exact size; skipped if funds, budget, or the risk cap cannot cover it.
+            </p>
           </div>
 
           {/* Min Market Cap */}
@@ -282,7 +321,7 @@ export const RiskManagementPanel: React.FC = () => {
           {/* Minimum Launch Age */}
           <div className="p-2.5 bg-base-300 rounded-lg">
             <label className="text-xs text-gray-400 mb-0.5 block">
-              Min Launch Age (seconds){" "}
+              Minimum age for eligibility at discovery (seconds){" "}
               <span className="text-gray-500">optional</span>
             </label>
             <input
@@ -304,11 +343,17 @@ export const RiskManagementPanel: React.FC = () => {
                 {errors.minSecondsSinceLaunch}
               </p>
             ) : (
-              launchWarning && (
-                <p className="text-xs text-yellow-400 mt-0.5">
-                  {launchWarning}
-                </p>
-              )
+              <>
+                {launchWarning ? (
+                  <p className="text-xs text-yellow-400 mt-0.5">
+                    {launchWarning}
+                  </p>
+                ) : (
+                  <p className="text-[11px] text-gray-500 mt-0.5">
+                    Younger tokens are skipped, not queued for later.
+                  </p>
+                )}
+              </>
             )}
           </div>
 
@@ -336,11 +381,11 @@ export const RiskManagementPanel: React.FC = () => {
                 {errors.maxTotalTrades}
               </p>
             ) : (
-              config?.tradesTaken != null && (
-                <p className="text-xs text-gray-500 mt-0.5">
-                  {config.tradesTaken} taken so far (closed trades count)
-                </p>
-              )
+              <p className="text-[11px] text-gray-500 mt-0.5">
+                {config?.tradesTaken != null
+                  ? `${config.tradesTaken} lifetime trades used; closed trades count and the total does not reset.`
+                  : "Closed trades count toward this lifetime cap; it does not reset."}
+              </p>
             )}
           </div>
 
@@ -353,6 +398,105 @@ export const RiskManagementPanel: React.FC = () => {
                 setField("autoTradeEnabled", value)
               }
             />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="p-2.5 bg-base-300 rounded-lg">
+            <label className="text-xs text-gray-400 mb-0.5 block">
+              Slippage tolerance (%)
+            </label>
+            <input
+              type="number"
+              value={formData.slippagePct}
+              onChange={(e) =>
+                setField("slippagePct", Number(e.target.value))
+              }
+              className={INPUT_CLASS}
+              min="0.1"
+              max="100"
+              step="0.1"
+            />
+            {errors.slippagePct && (
+              <p className="text-xs text-red-500 mt-0.5">
+                {errors.slippagePct}
+              </p>
+            )}
+            <p className="text-[11px] text-gray-500 mt-0.5">
+              Shared by manual quotes, prepared swaps, and the recorded trade price.
+            </p>
+          </div>
+
+          <div className="p-2.5 bg-base-300 rounded-lg">
+            <label className="text-xs text-gray-400 mb-0.5 block">
+              Priority fee (SOL)
+            </label>
+            <input
+              type="number"
+              value={formData.priorityFeeSol}
+              onChange={(e) =>
+                setField("priorityFeeSol", Number(e.target.value))
+              }
+              className={INPUT_CLASS}
+              min="0"
+              max="0.01"
+              step="0.00001"
+            />
+            {errors.priorityFeeSol && (
+              <p className="text-xs text-red-500 mt-0.5">
+                {errors.priorityFeeSol}
+              </p>
+            )}
+          </div>
+
+          <div className="p-2.5 bg-base-300 rounded-lg">
+            <label className="text-xs text-gray-400 mb-0.5 block">
+              Daily loss limit (%)
+            </label>
+            <input
+              type="number"
+              value={formData.maxDailyLossPct}
+              onChange={(e) =>
+                setField("maxDailyLossPct", Number(e.target.value))
+              }
+              className={INPUT_CLASS}
+              min="0.1"
+              max="100"
+              step="0.1"
+            />
+            {errors.maxDailyLossPct && (
+              <p className="text-xs text-red-500 mt-0.5">
+                {errors.maxDailyLossPct}
+              </p>
+            )}
+            <p className="text-[11px] text-gray-500 mt-0.5">
+              Reaching it pauses new buys until tomorrow; positions remain managed.
+            </p>
+          </div>
+
+          <div className="p-2.5 bg-base-300 rounded-lg">
+            <label className="text-xs text-gray-400 mb-0.5 block">
+              Per-trade size cap (% of wallet equity)
+            </label>
+            <input
+              type="number"
+              value={formData.maxRiskPerTradePct}
+              onChange={(e) =>
+                setField("maxRiskPerTradePct", Number(e.target.value))
+              }
+              className={INPUT_CLASS}
+              min="0.1"
+              max="100"
+              step="0.1"
+            />
+            {errors.maxRiskPerTradePct && (
+              <p className="text-xs text-red-500 mt-0.5">
+                {errors.maxRiskPerTradePct}
+              </p>
+            )}
+            <p className="text-[11px] text-gray-500 mt-0.5">
+              Hard cap for fixed-size and manual buys.
+            </p>
           </div>
         </div>
 
@@ -370,6 +514,11 @@ export const RiskManagementPanel: React.FC = () => {
             Number.isInteger(formData.maxOpenPositions)
               ? formData.maxOpenPositions
               : 1
+          }
+          fixedTradeAmountSol={
+            formData.fixedTradeAmountSol === ""
+              ? null
+              : Number(formData.fixedTradeAmountSol)
           }
           savedBudgetSol={savedBudget}
           capitalSol={tradingCapitalSol}
