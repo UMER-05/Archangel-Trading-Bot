@@ -166,6 +166,30 @@ export function resolveExitCause(
   return null;
 }
 
+/**
+ * Upper bound on a P&L reading the monitor will act on. +9,900% between two
+ * 5-second ticks is a broken reference quote (near-empty pool), not a win.
+ */
+export const MAX_PLAUSIBLE_PNL = 99;
+
+export function isPlausiblePnl(pnlPercent: number): boolean {
+  return Number.isFinite(pnlPercent) && pnlPercent <= MAX_PLAUSIBLE_PNL;
+}
+
+/**
+ * P&L of a full exit from what it actually returned: SOL received vs the SOL
+ * still invested in the position. `fallback` (the reference-quote estimate)
+ * is used only when there was no sell quote to measure against.
+ */
+export function realizedPnlFromProceeds(
+  solOutLamports: number,
+  costSol: number,
+  fallback: number,
+): number {
+  if (!(solOutLamports > 0) || !(costSol > 0)) return fallback;
+  return (solOutLamports / 1e9 - costSol) / costSol;
+}
+
 export const TRAILING_ACTIVATION_PCT = Number(
   process.env.TRAILING_ACTIVATION_PCT ?? 0.15,
 );
@@ -300,14 +324,12 @@ export function startPositionMonitor(
           }
 
           const walletConfig = await getEffectiveConfig(pos.wallet, tokenMint);
-          const tpPct =
-            typeof pos.tpPct === "number"
-              ? pos.tpPct
-              : walletConfig.takeProfitPct;
-          const slPct =
-            typeof pos.slPct === "number"
-              ? pos.slPct
-              : walletConfig.stopLossPct;
+          // The wallet's CURRENT settings decide the exit. The values stored
+          // on the position at buy time (pos.tpPct/slPct) used to win, so
+          // changing Take Profit / Stop Loss in the dashboard did nothing for
+          // positions already open — they kept selling at the old levels.
+          const tpPct = walletConfig.takeProfitPct;
+          const slPct = walletConfig.stopLossPct;
 
           // Fetch decimals (cached)
           const decimals =
@@ -396,6 +418,19 @@ export function startPositionMonitor(
           }
 
           const pnlPercent = (currentPrice - avgBuy) / avgBuy;
+
+          // A dead/drained pool makes the small reference quote return a few
+          // raw units, which reads as an absurd price (one position recorded
+          // +10,758,452% and was "sold" for 0 SOL as a profit). Treat such a
+          // reading as no price at all and re-check next tick; the
+          // LP-removal emergency exit below still handles real rugs.
+          if (!isPlausiblePnl(pnlPercent)) {
+            log.warn(
+              { tokenMint, wallet: pos.wallet, currentPrice, avgBuy, pnlPercent },
+              "Implausible price move; treating as untrustworthy and deferring TP/SL evaluation",
+            );
+            continue;
+          }
 
           // Update highest PnL for trailing stop - RULE 9
           const highestPnl = pos.highestPnlPct ?? pnlPercent;
@@ -927,7 +962,16 @@ export function startPositionMonitor(
               outputMint: SOL_MINT,
               amount: finalSellSolAmount, // SOL lamports received, not tokens sold
               price: currentPrice, // SOL per token
-              pnl: pnlPercent, // decimal (0.12 = +12%)
+              // Realized from the SOL the sell actually returns against the
+              // SOL still at work in the position — not the reference-quote
+              // estimate that triggered the exit (which recorded "+48%" on
+              // sells that returned 0 SOL). Falls back to the estimate only
+              // when no sell quote was available.
+              pnl: realizedPnlFromProceeds(
+                finalSellSolAmount,
+                pos.netSol,
+                pnlPercent,
+              ), // decimal (0.12 = +12%)
               wallet: pos.wallet,
               simulated: !useRealSwap,
               signature: swapRes.signature ?? null,

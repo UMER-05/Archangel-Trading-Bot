@@ -45,7 +45,6 @@ export interface GlobalSettingsForm {
   slippagePct: number;
   priorityFeeSol: number;
   maxDailyLossPct: number;
-  maxRiskPerTradePct: number;
 }
 
 export type GlobalSettingsErrors = Partial<
@@ -67,7 +66,6 @@ export const DEFAULT_GLOBAL_SETTINGS_FORM: GlobalSettingsForm = {
   slippagePct: 10,
   priorityFeeSol: 0.00003,
   maxDailyLossPct: 6,
-  maxRiskPerTradePct: 2,
 };
 
 export const MAX_LAUNCH_AGE_SECONDS = 30 * 24 * 3600;
@@ -117,8 +115,6 @@ export function formFromSettings(
       g?.slippageBps != null ? round(g.slippageBps / 100, 2) : d.slippagePct,
     priorityFeeSol: g?.priorityFeeSol ?? d.priorityFeeSol,
     maxDailyLossPct: g?.maxDailyLossPct ?? d.maxDailyLossPct,
-    maxRiskPerTradePct:
-      g?.maxRiskPerTradePct ?? d.maxRiskPerTradePct,
   };
 }
 
@@ -223,13 +219,12 @@ export function validateGlobalSettings(
   ) {
     errors.priorityFeeSol = "Enter a priority fee from 0 to 0.01 SOL";
   }
-  for (const [field, value] of [
-    ["maxDailyLossPct", f.maxDailyLossPct],
-    ["maxRiskPerTradePct", f.maxRiskPerTradePct],
-  ] as const) {
-    if (!Number.isFinite(value) || value < 0.1 || value > 100) {
-      errors[field] = "Enter a risk limit from 0.1% to 100%";
-    }
+  if (
+    !Number.isFinite(f.maxDailyLossPct) ||
+    f.maxDailyLossPct < 0.1 ||
+    f.maxDailyLossPct > 100
+  ) {
+    errors.maxDailyLossPct = "Enter a risk limit from 0.1% to 100%";
   }
 
   return errors;
@@ -293,6 +288,5 @@ export function toSettingsPayload(f: GlobalSettingsForm): GlobalSettings {
     slippageBps: Math.round(f.slippagePct * 100),
     priorityFeeSol: f.priorityFeeSol,
     maxDailyLossPct: f.maxDailyLossPct,
-    maxRiskPerTradePct: f.maxRiskPerTradePct,
   };
 }

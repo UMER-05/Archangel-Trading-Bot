@@ -37,17 +37,16 @@ describe("jitoSender", () => {
     });
 
     it("builds a tip instruction using a live-fetched tip account", async () => {
+      // A real 32-byte key that is not one of the hardcoded fallback tip
+      // accounts — the old literal decoded to 30 bytes, so new PublicKey()
+      // rejected it, and a fallback key could match the assertion by chance.
+      const liveTip = Keypair.generate().publicKey.toBase58();
       postMock.mockResolvedValue({
-        data: { result: ["TipAccount1111111111111111111111111111111"] },
+        data: { result: [liveTip] },
       });
       const payer = Keypair.generate().publicKey;
       const ix = await buildJitoTipInstruction(payer, 1000);
-      expect(
-        ix.keys.some(
-          (k) =>
-            k.pubkey.toBase58() === "TipAccount1111111111111111111111111111111",
-        ),
-      ).toBe(true);
+      expect(ix.keys.some((k) => k.pubkey.toBase58() === liveTip)).toBe(true);
     });
   });
 

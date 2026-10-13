@@ -28,7 +28,12 @@ function makeConnection(overrides: Partial<any> = {}) {
   return {
     getLatestBlockhash: jest
       .fn()
-      .mockResolvedValue({ blockhash: "bh1", lastValidBlockHeight: 100 }),
+      // Must decode to 32 bytes: "bh1" made probeTx.sign() throw, so every
+      // test silently landed in the probe's catch/fallback branch.
+      .mockResolvedValue({
+        blockhash: "11111111111111111111111111111111",
+        lastValidBlockHeight: 100,
+      }),
     getAddressLookupTable: jest.fn().mockResolvedValue({ value: null }),
     simulateTransaction: jest
       .fn()

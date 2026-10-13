@@ -575,30 +575,6 @@ export function TraderConfigModal({ isOpen, onClose }: TraderConfigModalProps) {
                     </p>
                   </div>
 
-                  <div>
-                    <label className="block text-sm font-medium text-gray-300 mb-2">
-                      Per-trade size cap (% of wallet equity)
-                    </label>
-                    <input
-                      type="number"
-                      value={formData.maxRiskPerTradePct}
-                      onChange={(e) =>
-                        setField("maxRiskPerTradePct", Number(e.target.value))
-                      }
-                      className={INPUT_CLASS}
-                      min="0.1"
-                      max="100"
-                      step="0.1"
-                    />
-                    {errors.maxRiskPerTradePct && (
-                      <p className="text-xs text-red-500 mt-1">
-                        {errors.maxRiskPerTradePct}
-                      </p>
-                    )}
-                    <p className="text-xs text-gray-500 mt-1">
-                      Hard cap for fixed-size and manual buys.
-                    </p>
-                  </div>
                 </div>
 
                 <div className="flex items-center">

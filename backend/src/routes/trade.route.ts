@@ -302,6 +302,11 @@ router.post("/prepare", async (req, res) => {
         ownerWallet: wallet,
         maxDailyLossPct: config.maxDailyLossPct,
         maxRiskPerTradePct: config.maxRiskPerTradePct,
+        // The daily-loss breaker still applies; the %-of-equity size cap
+        // does not (it never did before this check existed, and at its 2%
+        // default it refused any normal manual buy — 0.02 SOL on a 1 SOL
+        // wallet). The amount a user types for a manual buy is their call.
+        enforcePerTradeCap: false,
       });
       if (!risk.allowed) {
         return res.status(400).json({

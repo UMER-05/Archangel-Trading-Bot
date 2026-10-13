@@ -142,59 +142,99 @@ export async function getEligibleWallets(): Promise<WalletContext[]> {
   // Total Trades cap — whether auto-buy actually happens for it is also
   // still gated by the caller's own JUPITER_AUTO_BUY config, same as before
   // this phase existed.
-  const operatorCtx = operatorWalletContext();
-  if (
-    (await isAutoTradeCurrentlyEnabled(operatorCtx.ownerWallet)) &&
-    (await isUnderTradeCap(operatorCtx.ownerWallet))
-  ) {
-    eligible.push(operatorCtx);
-  } else {
-    LOG.info(
-      { wallet: operatorCtx.ownerWallet },
-      "Operator wallet excluded from this round: auto-trade disabled or Max Total Trades reached",
+  // A missing or malformed operator key (WALLET_SECRET_KEY / WALLET_PRIVATE_KEY)
+  // must only exclude the operator wallet. Thrown out of here, it aborted the
+  // whole fan-out, so no user hot wallet — each with its own key — could
+  // ever be bought for either.
+  let operatorCtx: WalletContext | null = null;
+  try {
+    operatorCtx = operatorWalletContext();
+  } catch (err: any) {
+    LOG.error(
+      { err: err?.message },
+      "Operator wallet key missing or invalid — operator wallet excluded; user wallets are still evaluated",
     );
   }
-
-  const userWallets = await userWalletService.listAllUserWallets();
-  for (const uw of userWallets) {
-    try {
-      const config = await getTraderConfig(uw.ownerWallet);
-      if (!config?.globalSettings?.autoTradeEnabled) continue;
-
-      const { balanceSol } = (await userWalletService.getUserWalletBalanceSol(
-        uw.ownerWallet,
-      )) ?? { balanceSol: 0 };
-      if (balanceSol < MIN_FUNDED_BALANCE_SOL) continue;
-
-      const maxTotalTrades = config.globalSettings.maxTotalTrades;
-      if (maxTotalTrades != null && maxTotalTrades > 0) {
-        const tradesTaken = await dbService.getTotalTradesCount(uw.ownerWallet);
-        if (tradesTaken >= maxTotalTrades) {
-          LOG.info(
-            { ownerWallet: uw.ownerWallet, tradesTaken, maxTotalTrades },
-            "Wallet excluded from this round: Max Total Trades reached",
-          );
-          continue;
-        }
-      }
-
-      const keypair = await userWalletService.getUserWalletKeypair(
-        uw.ownerWallet,
-      );
-      if (!keypair) continue;
-
-      eligible.push({
-        ownerWallet: uw.ownerWallet,
-        publicKey: uw.hotWalletPublicKey,
-        keypair,
-      });
-    } catch (err: any) {
-      LOG.error(
-        { ownerWallet: uw.ownerWallet, err: err?.message },
-        "Failed to evaluate wallet for auto-trade eligibility — skipping it",
+  if (operatorCtx) {
+    if (
+      (await isAutoTradeCurrentlyEnabled(operatorCtx.ownerWallet)) &&
+      (await isUnderTradeCap(operatorCtx.ownerWallet))
+    ) {
+      eligible.push(operatorCtx);
+    } else {
+      LOG.info(
+        { wallet: operatorCtx.ownerWallet },
+        "Operator wallet excluded from this round: auto-trade disabled or Max Total Trades reached",
       );
     }
   }
+
+  const userWallets = await userWalletService.listAllUserWallets();
+  // Evaluated concurrently: each wallet costs a balance RPC read, a config
+  // read and a key decrypt, and this ran for every wallet, one after another,
+  // for every single candidate token — seconds added to each buy.
+  const evaluated = await Promise.all(
+    userWallets.map(async (uw): Promise<WalletContext | null> => {
+      try {
+        const config = await getTraderConfig(uw.ownerWallet);
+        if (!config?.globalSettings?.autoTradeEnabled) return null;
+
+        const { balanceSol } = (await userWalletService.getUserWalletBalanceSol(
+          uw.ownerWallet,
+        )) ?? { balanceSol: 0 };
+        if (balanceSol < MIN_FUNDED_BALANCE_SOL) {
+          // Was a silent skip: an auto-trade-enabled wallet whose hot wallet
+          // has run dry looked, from the logs, identical to one skipped for
+          // any other reason — or not evaluated at all.
+          LOG.info(
+            {
+              ownerWallet: uw.ownerWallet,
+              balanceSol,
+              minFundedBalanceSol: MIN_FUNDED_BALANCE_SOL,
+            },
+            "Wallet excluded from this round: hot wallet below minimum funded balance",
+          );
+          return null;
+        }
+
+        const maxTotalTrades = config.globalSettings.maxTotalTrades;
+        if (maxTotalTrades != null && maxTotalTrades > 0) {
+          const tradesTaken = await dbService.getTotalTradesCount(uw.ownerWallet);
+          if (tradesTaken >= maxTotalTrades) {
+            LOG.info(
+              { ownerWallet: uw.ownerWallet, tradesTaken, maxTotalTrades },
+              "Wallet excluded from this round: Max Total Trades reached",
+            );
+            return null;
+          }
+        }
+
+        const keypair = await userWalletService.getUserWalletKeypair(
+          uw.ownerWallet,
+        );
+        if (!keypair) {
+          LOG.warn(
+            { ownerWallet: uw.ownerWallet },
+            "Wallet excluded from this round: no signing key could be loaded for its hot wallet",
+          );
+          return null;
+        }
+
+        return {
+          ownerWallet: uw.ownerWallet,
+          publicKey: uw.hotWalletPublicKey,
+          keypair,
+        };
+      } catch (err: any) {
+        LOG.error(
+          { ownerWallet: uw.ownerWallet, err: err?.message },
+          "Failed to evaluate wallet for auto-trade eligibility — skipping it",
+        );
+        return null;
+      }
+    }),
+  );
+  for (const ctx of evaluated) if (ctx) eligible.push(ctx);
 
   return eligible;
 }
@@ -268,11 +308,27 @@ export async function runPipelineForAllEligibleWallets(
         walletContext.ownerWallet,
         tokenMint,
       );
+      // Both skips below are reported back as failed results (not just
+      // logged) so the pipeline emits candidate:buy_failed and the trader's
+      // dashboard says why nothing was bought. Reasons are kept free of
+      // per-token numbers so the dashboard's once-a-minute dedupe holds.
       if (!launchMetrics || !launchMetricsWithinLimits(launchMetrics, config)) {
         LOG.info(
           { ownerWallet: walletContext.ownerWallet, tokenMint, launchMetrics },
           "Skipping wallet: launch market cap is below its configured minimum",
         );
+        results.push({
+          ownerWallet: walletContext.ownerWallet,
+          result: {
+            success: false,
+            failedStage: 0,
+            failedStageName: "Minimum Market Cap",
+            reason: launchMetrics
+              ? `Launch market cap is below your ${config.minMarketCapSol} SOL minimum`
+              : "Launch market cap could not be determined",
+            results: [],
+          },
+        });
         continue;
       }
 
@@ -290,6 +346,16 @@ export async function runPipelineForAllEligibleWallets(
           { ownerWallet: walletContext.ownerWallet, tokenMint, launchWindow },
           "Skipping wallet: token is outside its configured launch window",
         );
+        results.push({
+          ownerWallet: walletContext.ownerWallet,
+          result: {
+            success: false,
+            failedStage: 0,
+            failedStageName: "Minimum Launch Age",
+            reason: `Token was younger than your ${launchWindow}s minimum age when discovered — it is not re-checked later`,
+            results: [],
+          },
+        });
         continue;
       }
 

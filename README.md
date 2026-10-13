@@ -68,18 +68,21 @@ cp .env.example .env
 Edit `backend/.env` with your configuration:
 
 ```env
-# Solana Configuration
+# Required for the bot to discover and buy tokens (see .env.example for all)
+MONGO_URI=your_mongodb_connection_string
+SOLAMI_BLUR_API_KEY=your_solami_blur_key   # token discovery
+JUPITER_AUTO_BUY=true                      # must be exactly "true"
+USE_REAL_SWAP=false                        # "true" = real on-chain buys
 SOLANA_RPC_URL=your_rpc_endpoint_here
-WALLET_PRIVATE_KEY=your_wallet_private_key_here
-
-# Trading Configuration
-AUTO_BUY_ENABLED=false
-DEFAULT_BUY_AMOUNT=0.01
-
-# Optional Services
-BIRDEYE_API_KEY=your_birdeye_api_key
-HELIUS_API_KEY=your_helius_api_key
+WALLET_SECRET_KEY=your_wallet_private_key_here
 ```
+
+On startup the backend logs one `[trading readiness]` line per gate (discovery,
+auto-buy, swap mode, RPC, database, operator wallet, global pause) — check
+those first if the bot isn't buying.
+
+Each running copy of the bot needs its **own** database — copies sharing one
+`MONGO_URI` split the discovered tokens between them.
 
 #### Generate mainnet.json (IMPORTANT)
 

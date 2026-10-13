@@ -57,12 +57,20 @@ describe("sendAndConfirmWithRetry", () => {
   });
 
   it("bumps priority fee and rebuilds on a genuine timeout retry", async () => {
+    // The confirm-polling loop is wall-clock based, so a call-count mock
+    // depended on how many real 1ms sleeps fit in the timeout (timer
+    // resolution on Windows is ~1-15ms). A fake clock that advances 1ms per
+    // status poll makes the count exact: 5 polls fit in attempt 1's 5ms.
+    let now = 1_000;
+    const nowSpy = jest.spyOn(Date, "now").mockImplementation(() => now);
     let call = 0;
     const connection = makeConnection({
       getSignatureStatuses: jest.fn().mockImplementation(async () => {
         call += 1;
-        // Never confirmed on attempt 1's polling; confirmed once attempt 2 sends.
-        if (call <= 2) return { value: [null] };
+        now += 1;
+        // Unseen through attempt 1's 5 polls and the retry guard's re-check
+        // (#6); confirmed once attempt 2 has sent.
+        if (call <= 6) return { value: [null] };
         return { value: [{ err: null, confirmationStatus: "confirmed" }] };
       }),
     });
@@ -70,10 +78,10 @@ describe("sendAndConfirmWithRetry", () => {
     const result = await sendAndConfirmWithRetry(connection as any, buildTx, {
       initialComputeUnitPriceMicroLamports: 1000,
       priorityFeeBumpMultiplier: 2,
-      pollIntervalMs: 1,
+      pollIntervalMs: 0,
       confirmTimeoutMs: 5,
       maxAttempts: 3,
-    });
+    }).finally(() => nowSpy.mockRestore());
 
     expect(result.outcome).toBe("confirmed");
     expect(buildTx).toHaveBeenCalledTimes(2);
@@ -86,25 +94,33 @@ describe("sendAndConfirmWithRetry", () => {
   });
 
   it("does NOT resend if the previous attempt's signature confirmed while preparing a retry (double-execution guard)", async () => {
+    // Fake clock, 1ms per status poll — see the priority-fee test above for
+    // why a call-count mock against the real clock was flaky.
+    let now = 1_000;
+    const nowSpy = jest.spyOn(Date, "now").mockImplementation(() => now);
     let statusCallCount = 0;
     const connection = makeConnection({
       getSignatureStatuses: jest.fn().mockImplementation(async () => {
         statusCallCount += 1;
-        // Times out during attempt 1's own polling window (always null there),
-        // but by the time the retry guard re-checks, it's confirmed.
-        if (statusCallCount <= 5) return { value: [null] };
+        now += 1;
+        // Times out during attempt 1's own polling window (3 polls in 3ms,
+        // always null there), but by the time the retry guard re-checks
+        // (#4), it's confirmed.
+        if (statusCallCount <= 3) return { value: [null] };
         return { value: [{ err: null, confirmationStatus: "confirmed" }] };
       }),
     });
 
     const result = await sendAndConfirmWithRetry(connection as any, buildTx, {
       initialComputeUnitPriceMicroLamports: 1000,
-      pollIntervalMs: 1,
+      pollIntervalMs: 0,
       confirmTimeoutMs: 3,
       maxAttempts: 3,
-    });
+    }).finally(() => nowSpy.mockRestore());
 
     expect(result.outcome).toBe("confirmed");
+    // The confirmation came from the guard's re-check, not attempt 1's polling.
+    expect(statusCallCount).toBe(4);
     // Only one transaction should ever have been sent — the guard caught
     // the late confirmation before a second sendRawTransaction happened.
     expect(buildTx).toHaveBeenCalledTimes(1);

@@ -212,14 +212,15 @@ describe("toSettingsPayload", () => {
         slippagePct: 1.25,
         priorityFeeSol: 0.00005,
         maxDailyLossPct: 5,
-        maxRiskPerTradePct: 1.5,
       })
     );
     expect(payload.fixedTradeAmountSol).toBe(0.25);
     expect(payload.slippageBps).toBe(125);
     expect(payload.priorityFeeSol).toBe(0.00005);
     expect(payload.maxDailyLossPct).toBe(5);
-    expect(payload.maxRiskPerTradePct).toBe(1.5);
+    // The per-trade size cap is no longer a setting (it never applied in V1
+    // and at its 2% default refused normal buys); the form must not send it.
+    expect("maxRiskPerTradePct" in payload).toBe(false);
     expect(
       toSettingsPayload(
         formFromSettings({
@@ -227,7 +228,6 @@ describe("toSettingsPayload", () => {
           slippageBps: 125,
           priorityFeeSol: 0.00005,
           maxDailyLossPct: 5,
-          maxRiskPerTradePct: 1.5,
         })
       )
     ).toEqual(payload);
@@ -242,14 +242,12 @@ describe("execution and risk settings validation", () => {
         slippagePct: 0,
         priorityFeeSol: 0.02,
         maxDailyLossPct: 101,
-        maxRiskPerTradePct: 0,
       })
     );
     expect(errors.fixedTradeAmountSol).toBeTruthy();
     expect(errors.slippagePct).toBeTruthy();
     expect(errors.priorityFeeSol).toBeTruthy();
     expect(errors.maxDailyLossPct).toBeTruthy();
-    expect(errors.maxRiskPerTradePct).toBeTruthy();
   });
 });
 

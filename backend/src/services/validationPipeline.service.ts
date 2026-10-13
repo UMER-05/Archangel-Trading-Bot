@@ -534,9 +534,13 @@ class ValidationPipelineService {
       ownerWallet: walletContext.ownerWallet,
       maxDailyLossPct: config.maxDailyLossPct,
       maxRiskPerTradePct: config.maxRiskPerTradePct,
-      // Keep the existing split sizing behavior; the hard per-trade cap
-      // applies when the trader has explicitly chosen an exact buy amount.
-      enforcePerTradeCap: config.fixedTradeAmountSol !== null,
+      // Never for auto-buys (as before the fixed-size option existed): the
+      // size is either the trader's 1/N split or the exact amount they typed
+      // into "Fixed SOL per trade" — in both cases the amount IS their risk
+      // decision. Enforcing the default 2%-of-equity cap on a fixed amount
+      // refused almost any realistic size (0.1 SOL on a 1 SOL wallet) and
+      // the bot silently never bought. The cap still applies to manual buys.
+      enforcePerTradeCap: false,
     });
     if (!riskCheck.allowed) {
       return {

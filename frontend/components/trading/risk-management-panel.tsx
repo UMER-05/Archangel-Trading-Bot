@@ -474,30 +474,6 @@ export const RiskManagementPanel: React.FC = () => {
             </p>
           </div>
 
-          <div className="p-2.5 bg-base-300 rounded-lg">
-            <label className="text-xs text-gray-400 mb-0.5 block">
-              Per-trade size cap (% of wallet equity)
-            </label>
-            <input
-              type="number"
-              value={formData.maxRiskPerTradePct}
-              onChange={(e) =>
-                setField("maxRiskPerTradePct", Number(e.target.value))
-              }
-              className={INPUT_CLASS}
-              min="0.1"
-              max="100"
-              step="0.1"
-            />
-            {errors.maxRiskPerTradePct && (
-              <p className="text-xs text-red-500 mt-0.5">
-                {errors.maxRiskPerTradePct}
-              </p>
-            )}
-            <p className="text-[11px] text-gray-500 mt-0.5">
-              Hard cap for fixed-size and manual buys.
-            </p>
-          </div>
         </div>
 
         {/* Trading budget: protect profits by capping what the bot may trade */}

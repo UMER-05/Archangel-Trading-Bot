@@ -97,7 +97,18 @@ export async function applyArchAngelFilters(
     );
 
     // Mint/freeze authority — straight from the mint account on-chain.
-    const authorityStatus = await getOnChainMintAuthorityStatus(tokenMint);
+    // All three lookups are independent, so they are started together and
+    // awaited in the original order (same checks, same fail-closed rules).
+    // Sequentially they added RugCheck's up-to-5s call plus a heavy
+    // getProgramAccounts scan on top of the authority read, per token — a
+    // large share of the time between discovery and buy.
+    const authorityPromise = getOnChainMintAuthorityStatus(tokenMint);
+    const reportPromise = fetchRugCheckReport(tokenMint);
+    const holderPromise = getHolderDistribution(tokenMint, {
+      excludeOwners: [poolAddress],
+    });
+
+    const authorityStatus = await authorityPromise;
     if (!authorityStatus.available) {
       // Fail closed: can't confirm authorities are disabled, so don't treat
       // an RPC hiccup as "safe."
@@ -137,7 +148,7 @@ export async function applyArchAngelFilters(
     }
 
     // Tax + honeypot + LP lock all come from one RugCheck report.
-    const report = await fetchRugCheckReport(tokenMint);
+    const report = await reportPromise;
     if (!report.available) {
       // Fail closed: an outage must not read as "0% tax" / "not a honeypot" —
       // that's exactly backwards for checks whose whole job is catching a
@@ -180,9 +191,7 @@ export async function applyArchAngelFilters(
     // liquidity isn't mistaken for a whale wallet.
     const maxCreatorPct = config.maxCreatorHoldingsPct ?? 20;
     const maxTop3Pct = config.maxTop3HoldingsPct ?? 60;
-    const holderDist = await getHolderDistribution(tokenMint, {
-      excludeOwners: [poolAddress],
-    });
+    const holderDist = await holderPromise;
     if (!holderDist.available) {
       failedFilters.push(
         `creator_holdings_under_${maxCreatorPct}_pct`,
