@@ -42,15 +42,39 @@ describe("addTrade", () => {
     expect(record.pnl).toBeCloseTo(0.4, 9);
   });
 
-  it("normalizes a whole-number pnl (e.g. 40 meaning 40%) down to a decimal fraction", async () => {
+  it("keeps a gain above +100% as-is and derives the SOL profit from the proceeds", async () => {
+    // The real case: 0.0133 SOL bought, the sell returned 0.0312 SOL (+134%).
+    // The old heuristic read 1.34 as "134 percent / 100" and stored +1.3%.
     const record = await dbService.addTrade({
       type: "sell",
       token: "MINT_PNL_B",
-      amount: 1_000_000_000,
-      price: 0.002,
-      pnl: 40, // > 1 in magnitude, so treated as 40% not 4000%
+      amount: 31_179_498, // lamports received
+      price: 0.000002622,
+      pnl: 1.34,
     });
-    expect(record.pnl).toBeCloseTo(0.4, 9);
+    expect(record.pnl).toBeCloseTo(1.34, 9);
+    // profit = proceeds - cost = 0.0312 - 0.0312/2.34
+    expect(record.pnlSol).toBeCloseTo(0.031179498 - 0.031179498 / 2.34, 9);
+  });
+
+  it("derives a loss in SOL from the proceeds and never below -100%", async () => {
+    // Bought 0.01 SOL worth, sold for 0.005 SOL: -50%, loss 0.005 SOL.
+    const half = await dbService.addTrade({
+      type: "sell",
+      token: "MINT_PNL_C",
+      amount: 5_000_000,
+      price: 0.001,
+      pnl: -0.5,
+    });
+    expect(half.pnlSol).toBeCloseTo(-0.005, 9);
+    const wipe = await dbService.addTrade({
+      type: "sell",
+      token: "MINT_PNL_D",
+      amount: 0,
+      price: 0,
+      pnl: -3, // garbage below -100% is clamped
+    });
+    expect(wipe.pnl).toBe(-1);
   });
 
   it("does not increment real stats when a trade is marked simulated", async () => {

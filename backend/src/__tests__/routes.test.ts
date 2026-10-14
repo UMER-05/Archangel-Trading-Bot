@@ -31,6 +31,18 @@ jest.mock("../services/tokenSafetyChecks.service.js", () => ({
   }),
 }));
 
+// The owner-balance route reads the chain through the server's RPC; keep the
+// rest of solana.service real and stub only that read so the test needs no
+// network.
+jest.mock("../services/solana.service.js", () => {
+  const actual = jest.requireActual("../services/solana.service.js");
+  return {
+    __esModule: true,
+    ...actual,
+    getBalanceInSol: jest.fn().mockResolvedValue(1.5),
+  };
+});
+
 let app: import("express").Express;
 let dbService: Awaited<ReturnType<typeof startTestDb>>;
 
@@ -50,6 +62,23 @@ describe("GET /api/tokens/sol-price", () => {
     expect(res.statusCode).toBe(200);
     expect(res.body.success).toBe(true);
     expect(res.body.price).toBe(200);
+  });
+});
+
+describe("GET /api/user-wallet/:ownerWallet/owner-balance", () => {
+  it("returns the connected wallet's SOL balance read through the server RPC", async () => {
+    const owner = Keypair.generate().publicKey.toBase58();
+    const res = await request(app).get(`/api/user-wallet/${owner}/owner-balance`);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.wallet).toBe(owner);
+    expect(res.body.balanceSol).toBe(1.5);
+  });
+
+  it("rejects a malformed wallet address with 400 instead of querying the chain", async () => {
+    const res = await request(app).get("/api/user-wallet/not-a-pubkey/owner-balance");
+    expect(res.statusCode).toBe(400);
+    expect(res.body.success).toBe(false);
   });
 });
 

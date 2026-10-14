@@ -211,7 +211,7 @@ export const AccountNotifications: React.FC = () => {
   };
 
   return (
-    <div className="fixed top-4 right-4 z-50 space-y-2 max-w-md">
+    <div className="fixed top-4 right-4 z-[100]  space-y-2 max-w-md">
       <AnimatePresence>
         {alerts.map((alert) => (
           <motion.div

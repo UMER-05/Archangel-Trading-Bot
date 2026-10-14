@@ -9,7 +9,12 @@ import { MongoMemoryServer } from "mongodb-memory-server";
 let mongod: MongoMemoryServer | null = null;
 
 export async function startTestDb() {
-  mongod = await MongoMemoryServer.create();
+  // The embedded mongod can take well over the library's 10s default to boot
+  // on a loaded machine (e.g. while the bot itself is running); that produced
+  // "Instance failed to start within 10000ms" for every test in a suite, with
+  // nothing wrong in the code under test. Allow 60s — the limit only matters
+  // when startup is slow, it never masks a failing assertion.
+  mongod = await MongoMemoryServer.create({ instance: { launchTimeout: 60_000 } });
   process.env.MONGO_URI = mongod.getUri();
   process.env.MONGO_DB_NAME = "archangel-test";
 

@@ -91,6 +91,25 @@ process.on("uncaughtException", (err: Error) => {
             detail: "PAUSED by the operator — no wallet will auto-buy",
           },
     );
+    try {
+      const skewMs = await dbService.getServerClockSkewMs();
+      const skewS = Math.round(skewMs / 1000);
+      readiness.push(
+        Math.abs(skewMs) <= 10_000
+          ? { level: "ok", check: "System clock", detail: `within ${Math.abs(skewS)}s of the database server` }
+          : {
+              level: "error",
+              check: "System clock",
+              detail: `this machine's clock is ${Math.abs(skewS)}s ${skewMs < 0 ? "BEHIND" : "ahead of"} the database server — ${
+                skewMs < 0
+                  ? "every new pool looks future-dated and is rejected as stale; no token will be bought"
+                  : "pools look older than they are and may be rejected as stale"
+              }. Sync the system time (Windows: Settings → Time & Language → Sync now).`,
+            },
+      );
+    } catch (err: any) {
+      log.warn({ err: err?.message }, "Could not compare clocks with the database server");
+    }
     for (const item of readiness) {
       const line = `[trading readiness] ${item.check}: ${item.detail}`;
       if (item.level === "error") log.error(line);

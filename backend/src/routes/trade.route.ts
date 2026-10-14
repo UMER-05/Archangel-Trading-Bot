@@ -54,7 +54,12 @@ router.get("/manual-buy-candidates", async (req, res) => {
   try {
     const limit = Math.min(Number(req.query.limit) || 40, 100);
     const cutoff = Date.now() - MAX_CANDIDATE_AGE_MS;
-    const tokens = await db.getTokensByState("TRADABLE");
+    // Bounded in the DB (see getRecentTradableTokens); a generous fetch so
+    // the confirmedTradableAt-based filter/sort below still has enough rows.
+    const tokens = await db.getRecentTradableTokens(
+      new Date(cutoff),
+      Math.max(limit * 10, 200),
+    );
     const candidates = tokens
       .map((t) => ({
         mint: t.mint,

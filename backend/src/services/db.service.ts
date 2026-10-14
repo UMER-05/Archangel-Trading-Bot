@@ -338,6 +338,9 @@ export async function connect() {
   await tradesCol.createIndex({ timestamp: -1 });
   await watchlistCol.createIndex({ mint: 1 });
   await watchlistCol.createIndex({ userId: 1 });
+  // Serves getRecentTradableTokens (Buy page) and the per-state recency
+  // queries without scanning every TRADABLE row.
+  await tokenStateCol.createIndex({ state: 1, detectedAt: -1 });
   // Was a unique index on token alone, from when only one wallet ever held
   // positions — that would now reject a second wallet's metadata for a
   // token the first wallet is also holding. Drop it (no-op if it never
@@ -406,14 +409,20 @@ export async function addTrade(
   const lamports = Number(tr.amount || 0);
   const amountSol = lamports / 1e9;
 
-  // normalize pnl passed in various formats
+  // pnl is a decimal fraction (0.4 = +40%), which is what every caller in
+  // this codebase sends. The old "a value above 1 must be a whole percent,
+  // divide by 100" guess turned every real gain above +100% into noise: a
+  // sell that returned 0.0312 SOL on a 0.0133 SOL buy (+134%) was recorded
+  // as +1.3%. A loss can never exceed -100%.
   let pnlPercent =
-    typeof tr.pnl === "number"
-      ? Math.abs(tr.pnl) <= 1
-        ? tr.pnl
-        : tr.pnl / 100
+    typeof tr.pnl === "number" && Number.isFinite(tr.pnl)
+      ? Math.max(tr.pnl, -1)
       : 0;
-  const pnlSol = amountSol * pnlPercent;
+  // For a sell, `amount` is the SOL received, so the SOL profit is
+  // proceeds - cost = proceeds * pnl / (1 + pnl) — not proceeds * pnl,
+  // which overstated a +134% gain by 2.3x and understated every loss.
+  const pnlSol =
+    pnlPercent > -1 ? (amountSol * pnlPercent) / (1 + pnlPercent) : -amountSol;
 
   const record: TradeRecord = {
     id: (tr.id as string) || crypto.randomUUID(),
@@ -1443,6 +1452,24 @@ export async function getTokensByState(
   return await tokenStateCol!.find({ state }).sort({ updatedAt: -1 }).toArray();
 }
 
+/**
+ * TRADABLE tokens detected since `cutoff`, newest first, bounded in the
+ * database. The manual Buy page used getTokensByState("TRADABLE") and
+ * filtered in JS — once the collection held 150k+ TRADABLE rows that took
+ * minutes and the page showed nothing.
+ */
+export async function getRecentTradableTokens(
+  cutoff: Date,
+  limit: number,
+): Promise<TokenState[]> {
+  if (!db) await connect();
+  return await tokenStateCol!
+    .find({ state: "TRADABLE", detectedAt: { $gte: cutoff } })
+    .sort({ detectedAt: -1 })
+    .limit(limit)
+    .toArray();
+}
+
 export async function getTokensByStates(
   states: TokenLifecycleState[],
   options?: {
@@ -1557,6 +1584,21 @@ export async function setGlobalAutoTradeEnabled(
     );
 }
 
+/**
+ * This machine's clock minus the database server's clock, in ms. Candidate
+ * freshness (candidatePipeline.isFreshCandidate) compares the local clock
+ * with on-chain block times, so a PC clock a few minutes slow makes every
+ * new pool look future-dated and silently rejects all of them.
+ */
+export async function getServerClockSkewMs(): Promise<number> {
+  if (!db) await connect();
+  const before = Date.now();
+  const hello = await db!.command({ hello: 1 });
+  const after = Date.now();
+  const serverMs = new Date(hello.localTime).getTime();
+  return Math.round((before + after) / 2 - serverMs);
+}
+
 export async function close() {
   if (client) {
     await client.close();
@@ -1606,5 +1648,7 @@ export default {
   saveUserSettings,
   getGlobalAutoTradeEnabled,
   setGlobalAutoTradeEnabled,
+  getRecentTradableTokens,
+  getServerClockSkewMs,
   close,
 };
