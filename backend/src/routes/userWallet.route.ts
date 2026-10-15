@@ -1,6 +1,8 @@
 // backend/src/routes/userWallet.route.ts
 import { Router, Request, Response } from "express";
+import { PublicKey } from "@solana/web3.js";
 import { getLogger } from "../utils/logger.js";
+import { getBalanceInSol } from "../services/solana.service.js";
 import userWalletService, {
   sellCustodialPosition,
 } from "../services/userWallet.service.js";
@@ -131,6 +133,38 @@ router.get("/:ownerWallet", async (req: Request, res: Response) => {
  * connected wallet — nowhere else. Requires proof (a fresh wallet
  * signature) that the caller actually controls :ownerWallet.
  */
+/**
+ * GET /api/user-wallet/:ownerWallet/owner-balance
+ * SOL balance of the CONNECTED (owner) wallet itself, read through the
+ * server's RPC. The dashboard used to read this straight from a public Solana
+ * RPC in the browser; that node answers 403 to browser traffic, which left the
+ * balance stuck at 0 and the manual Buy page reporting "Insufficient balance".
+ * Reading it here reuses the backend's RPC without exposing its key.
+ */
+router.get(
+  "/:ownerWallet/owner-balance",
+  async (req: Request, res: Response) => {
+    const { ownerWallet } = req.params;
+    let owner: PublicKey;
+    try {
+      owner = new PublicKey(ownerWallet!);
+    } catch {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid wallet address" });
+    }
+    try {
+      const balanceSol = await getBalanceInSol(owner);
+      return res.json({ success: true, wallet: owner.toBase58(), balanceSol });
+    } catch (err: any) {
+      log.warn({ err: err?.message }, "Could not read owner wallet balance");
+      return res
+        .status(502)
+        .json({ success: false, message: "Balance lookup failed" });
+    }
+  },
+);
+
 router.post("/:ownerWallet/withdraw", async (req: Request, res: Response) => {
   try {
     const { ownerWallet } = req.params;

@@ -8,6 +8,16 @@ import { Card } from "@components/ui/card";
 import { useStats } from "@hooks/useStats";
 import { useWallet } from "@hooks/useWallet";
 
+// Round to what the card displays before handing it to CountUp. The backend
+// values carry many more decimals (live token prices), so without this every
+// 10s refresh changed `end` in an invisible digit and CountUp replayed its
+// whole animation even though the shown number stayed the same.
+const toDisplay = (value: number | undefined, decimals = 4): number => {
+  const n = Number(value) || 0;
+  const f = 10 ** decimals;
+  return Math.round(n * f) / f;
+};
+
 export default function TradeSummary() {
   const { stats, loading } = useStats();
   const { connected, balance } = useWallet();
@@ -32,7 +42,8 @@ export default function TradeSummary() {
 
         <p className="text-2xl font-bold text-white">
           <CountUp
-            end={stats.portfolioValue || 0}
+            end={toDisplay(stats.portfolioValue)}
+            preserveValue
             duration={1.4}
             separator=","
             decimals={4}
@@ -54,7 +65,8 @@ export default function TradeSummary() {
         <p className="text-2xl font-bold text-white">
           {connected ? (
             <CountUp
-              end={balance || 0}
+              end={toDisplay(balance)}
+              preserveValue
               duration={1.4}
               separator=","
               decimals={4}
@@ -89,7 +101,8 @@ export default function TradeSummary() {
           }`}
         >
           <CountUp
-            end={stats.totalProfitSol || 0}
+            end={toDisplay(stats.totalProfitSol)}
+            preserveValue
             duration={1.4}
             separator=","
             decimals={4}
@@ -106,7 +119,7 @@ export default function TradeSummary() {
         </div>
 
         <p className="text-2xl font-bold text-white">
-          <CountUp end={stats.openTrades || 0} duration={1.4} />
+          <CountUp end={stats.openTrades || 0} preserveValue duration={1.4} />
         </p>
       </Card>
     </motion.div>

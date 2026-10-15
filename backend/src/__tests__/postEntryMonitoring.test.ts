@@ -67,3 +67,35 @@ describe("post-entry position monitoring", () => {
     stop();
   });
 });
+
+import {
+  isPlausiblePnl,
+  realizedPnlFromProceeds,
+  MAX_PLAUSIBLE_PNL,
+} from "../services/monitor.service.js";
+
+describe("price sanity guard", () => {
+  it("accepts normal moves and rejects a broken reference quote", () => {
+    expect(isPlausiblePnl(0.12)).toBe(true);
+    expect(isPlausiblePnl(-0.9999)).toBe(true);
+    expect(isPlausiblePnl(MAX_PLAUSIBLE_PNL)).toBe(true);
+    // The real case from the DB: +10,758,452% on a drained pool.
+    expect(isPlausiblePnl(107584.5)).toBe(false);
+    expect(isPlausiblePnl(Number.NaN)).toBe(false);
+    expect(isPlausiblePnl(Number.POSITIVE_INFINITY)).toBe(false);
+  });
+});
+
+describe("realized P&L of a full exit", () => {
+  it("uses the SOL actually received against the SOL still invested", () => {
+    // 0.03 SOL invested, sell returns 0.036 SOL -> +20%
+    expect(realizedPnlFromProceeds(36_000_000, 0.03, 9.9)).toBeCloseTo(0.2, 9);
+    // returns 0.015 SOL -> -50%, whatever the reference quote estimated
+    expect(realizedPnlFromProceeds(15_000_000, 0.03, 0.48)).toBeCloseTo(-0.5, 9);
+  });
+
+  it("falls back to the estimate only when there is no sell quote or no cost basis", () => {
+    expect(realizedPnlFromProceeds(0, 0.03, 0.48)).toBe(0.48);
+    expect(realizedPnlFromProceeds(36_000_000, 0, 0.48)).toBe(0.48);
+  });
+});

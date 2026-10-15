@@ -106,7 +106,26 @@ export const WalletDataProvider: React.FC<{ children: React.ReactNode }> = ({
     const owner = solanaWallet.publicKey;
     if (!owner || !solanaWallet.connected) return null;
 
+    // Ask the backend first: it reads the balance through its own RPC. The
+    // browser-side fallbacks below end at the free public node, which answers
+    // 403 to browser traffic — with nothing else configured that left the
+    // balance stuck at 0 and the Buy page saying "Insufficient balance".
     let lastError: unknown = null;
+    try {
+      const res = await fetcher<{ success?: boolean; balanceSol?: number }>(
+        `/api/user-wallet/${owner.toBase58()}/owner-balance`,
+        { timeoutMs: 8_000 }
+      );
+      if (res?.success && typeof res.balanceSol === "number") {
+        setBalance(res.balanceSol);
+        return res.balanceSol;
+      }
+      lastError = new Error(
+        "Backend did not return a balance; trying RPC endpoints"
+      );
+    } catch (err) {
+      lastError = err; // backend down: fall through to direct RPC
+    }
     for (const connection of connections) {
       try {
         const lamports = await connection.getBalance(owner);

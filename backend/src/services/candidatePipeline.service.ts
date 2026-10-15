@@ -94,15 +94,31 @@ export async function processCandidateMint(
 ): Promise<void> {
   const { mint } = candidate;
   const config = loadConfig();
+  // Phase timings, logged below: where the time goes between a pool
+  // appearing on-chain and a buy landing (discovery → Jupiter check →
+  // filters → per-wallet execution).
+  const startedAt = Date.now();
+  const timing = () => ({
+    msSinceDiscovery: Date.now() - startedAt,
+    poolAgeMs: Date.now() - candidate.poolCreatedAt.getTime(),
+  });
 
   // Already seen this mint before (regardless of outcome) — one pass through
   // this pipeline per mint is the whole point of the consolidation, so don't
   // reprocess it just because a second pool-creation event referenced it.
+  // Logged at info, not debug (production only prints info and up): the
+  // TokenState row lives in MongoDB, so a second bot instance sharing the
+  // same MONGO_URI (e.g. a dev copy or a server deployment) that saw the mint
+  // first makes THIS instance skip every candidate — previously invisibly.
   const existing = await dbService.getTokenState(mint);
   if (existing) {
-    LOG.debug(
-      { mint: mint.slice(0, 8), state: existing.state },
-      "Already processed — skipping",
+    LOG.info(
+      {
+        mint: mint.slice(0, 8),
+        state: existing.state,
+        detectedAt: existing.detectedAt,
+      },
+      "Already processed (TokenState exists in the database) — skipping",
     );
     return;
   }
@@ -233,7 +249,7 @@ export async function processCandidateMint(
     return;
   }
   LOG.info(
-    { mint: mint.slice(0, 8), passed: filterResult.passedFilters },
+    { mint: mint.slice(0, 8), passed: filterResult.passedFilters, ...timing() },
     "✅ Passed ArchAngel filters",
   );
   io?.emit("candidate:approved", {
@@ -242,9 +258,11 @@ export async function processCandidateMint(
   });
 
   if (!config.autoBuyEnabled) {
-    LOG.debug(
+    // warn, not debug: production logs only show info and up, so an approved
+    // token that was never bought gave no trace of why.
+    LOG.warn(
       { mint: mint.slice(0, 8) },
-      "Auto-buy disabled — stopping after filtering",
+      'Auto-buy disabled (JUPITER_AUTO_BUY is not "true") — approved token NOT bought',
     );
     return;
   }
@@ -260,7 +278,7 @@ export async function processCandidateMint(
   }
 
   LOG.info(
-    { mint: mint.slice(0, 8) },
+    { mint: mint.slice(0, 8), ...timing() },
     "🚀 Phase 5/6 — quoting and buying across eligible wallets",
   );
   // Routed through executionRouter.service.ts rather than calling
@@ -311,6 +329,8 @@ export async function processCandidateMint(
         mint: mint.slice(0, 8),
         wallet: ownerWallet,
         signature: result.executionResult?.signature,
+        amountSol: result.executionResult?.amountSol,
+        ...timing(),
       },
       "✅ Buy executed — handing off to monitoring",
     );

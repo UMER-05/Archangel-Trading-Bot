@@ -20,6 +20,8 @@ import { ENV } from "./utils/env.js";
 import candidatePipelineService from "./services/candidatePipeline.service.js";
 import { registerNativeExecutors } from "./services/execution/registerNativeExecutors.js";
 import { startBlurStream } from "./services/blurStream.service.js";
+import { loadKeypairFromEnv } from "./services/solana.service.js";
+import { checkTradingReadiness } from "./utils/tradingReadiness.js";
 
 // pino-pretty runs its transport in a worker thread in dev; log.error()
 // immediately followed by process.exit() can race ahead of that flush and the
@@ -65,6 +67,57 @@ process.on("uncaughtException", (err: Error) => {
     log.error("❌ Failed to connect to DB: " + String(err));
     scheduleExit(1);
     return;
+  }
+
+  // One summary of every gate that decides whether auto-buys can happen —
+  // see utils/tradingReadiness.ts for why these needed surfacing.
+  try {
+    let operatorWallet: { publicKey: string } | { error: string };
+    try {
+      operatorWallet = { publicKey: loadKeypairFromEnv().publicKey.toBase58() };
+    } catch (err: any) {
+      operatorWallet = { error: err?.message ?? String(err) };
+    }
+    const readiness = checkTradingReadiness(process.env, {
+      cwd: process.cwd(),
+      operatorWallet,
+    });
+    readiness.push(
+      (await dbService.getGlobalAutoTradeEnabled())
+        ? { level: "ok", check: "Global auto-trade", detail: "enabled" }
+        : {
+            level: "error",
+            check: "Global auto-trade",
+            detail: "PAUSED by the operator — no wallet will auto-buy",
+          },
+    );
+    try {
+      const skewMs = await dbService.getServerClockSkewMs();
+      const skewS = Math.round(skewMs / 1000);
+      readiness.push(
+        Math.abs(skewMs) <= 10_000
+          ? { level: "ok", check: "System clock", detail: `within ${Math.abs(skewS)}s of the database server` }
+          : {
+              level: "error",
+              check: "System clock",
+              detail: `this machine's clock is ${Math.abs(skewS)}s ${skewMs < 0 ? "BEHIND" : "ahead of"} the database server — ${
+                skewMs < 0
+                  ? "every new pool looks future-dated and is rejected as stale; no token will be bought"
+                  : "pools look older than they are and may be rejected as stale"
+              }. Sync the system time (Windows: Settings → Time & Language → Sync now).`,
+            },
+      );
+    } catch (err: any) {
+      log.warn({ err: err?.message }, "Could not compare clocks with the database server");
+    }
+    for (const item of readiness) {
+      const line = `[trading readiness] ${item.check}: ${item.detail}`;
+      if (item.level === "error") log.error(line);
+      else if (item.level === "warn") log.warn(line);
+      else log.info(line);
+    }
+  } catch (err: any) {
+    log.warn({ err: err?.message }, "Trading readiness check failed");
   }
 
   if (!ENV.FRONTEND_URL) {

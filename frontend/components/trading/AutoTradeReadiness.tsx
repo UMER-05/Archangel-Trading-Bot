@@ -170,19 +170,14 @@ export function AutoTradeReadiness({
     dailyLossPct != null &&
     maxDailyLossPct != null &&
     dailyLossPct >= maxDailyLossPct;
-  const fixedTradeAmountOverRiskCap =
-    g?.fixedTradeAmountSol != null &&
-    g.maxRiskPerTradePct != null &&
-    g.fixedTradeAmountSol >
-      ((balanceSol + (deployedSol ?? 0)) * g.maxRiskPerTradePct) / 100;
-
+  // The per-trade size cap no longer applies to auto-buys (a fixed size is
+  // the trader's own decision), so it is not a readiness condition here.
   const ready =
     autoTradeEnabled &&
     !capReached &&
     !lowBalance &&
     !budgetExhausted &&
-    !dailyLimitReached &&
-    !fixedTradeAmountOverRiskCap;
+    !dailyLimitReached;
 
   // Profit the bot is keeping its hands off, when a budget is on.
   const protectedNote =
@@ -243,11 +238,7 @@ export function AutoTradeReadiness({
   }
 
   // Problems fixed in Trading Settings vs. by depositing SOL.
-  const needsSettings =
-    !autoTradeEnabled ||
-    capReached ||
-    budgetExhausted ||
-    fixedTradeAmountOverRiskCap;
+  const needsSettings = !autoTradeEnabled || capReached || budgetExhausted;
 
   const missing: string[] = [];
   if (lowBalance) {
@@ -287,18 +278,6 @@ export function AutoTradeReadiness({
       )}% of ${maxDailyLossPct}%), so the bot has paused new buys — open positions are still managed`
     );
   }
-  if (fixedTradeAmountOverRiskCap) {
-    const maxSize =
-      ((balanceSol + (deployedSol ?? 0)) *
-        (g?.maxRiskPerTradePct ?? 2)) /
-      100;
-    missing.push(
-      `lower the fixed trade size to at most ${formatNumber(
-        maxSize,
-        4
-      )} SOL or raise the per-trade size cap`
-    );
-  }
   const reasonText = `The bot won't trade for you yet — ${missing.join(
     " and "
   )}.${tradeCountNote ? ` ${tradeCountNote}` : ""}`;
@@ -313,8 +292,6 @@ export function AutoTradeReadiness({
         ? "Trading budget used up"
         : dailyLimitReached
           ? "Daily loss limit reached"
-          : fixedTradeAmountOverRiskCap
-            ? "Fixed trade exceeds risk cap"
           : lowBalance
             ? "Low balance"
             : "Auto-trade not active";
