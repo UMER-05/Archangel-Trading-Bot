@@ -485,7 +485,6 @@ This is **normal behavior** if:
 
 - [SOCKET_EVENTS.md](./SOCKET_EVENTS.md) - Socket.io event reference
 - [TESTING_CONFIG.md](./TESTING_CONFIG.md) - Testing configuration
-- [MARKET_CAP_FILTERING.md](./MARKET_CAP_FILTERING.md) - Token filtering logic
 
 ## Support
 

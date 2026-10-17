@@ -1,3 +1,5 @@
+> **Status note (Oct 2026):** this document predates the move to Jupiter-based execution. The services it describes still exist (`validationPipeline.service.ts`, `tokenLifecycle.service.ts`), but references to `tokenDiscovery.service.ts`, `birdeye.service.ts` and `flux.service.ts` are historical; discovery now runs through `blurStream.service.ts` → `candidatePipeline.service.ts`.
+
 # 8-Stage Validation Pipeline Implementation
 
 ## Overview
@@ -487,3 +489,4 @@ For issues or questions:
 - Check logs: `logs/backend.log`
 - Monitor WebSocket events in browser console
 - Review failed tokens in database
+

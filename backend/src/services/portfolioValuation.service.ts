@@ -11,9 +11,11 @@
 // with a real mark-to-market using each open position's live Jupiter price,
 // the same calculation positions.route.ts already does per-position.
 import dbService from "./db.service.js";
-import { getQuoteImpliedPriceSol } from "./jupiter.service.js";
+import { getCachedQuoteImpliedPriceSol } from "./jupiter.service.js";
 import { getOnChainMintSupply } from "./tokenSafetyChecks.service.js";
 import depositTrackerService from "./depositTracker.service.js";
+import { isPlausiblePnl } from "./monitor.service.js";
+import { isBotManagedOpenPosition } from "../utils/positionState.js";
 import { getLogger } from "../utils/logger.js";
 
 const log = getLogger("portfolioValuation");
@@ -44,18 +46,25 @@ export async function getPortfolioValuation(
   // only price source left in this codebase now that Birdeye has been
   // removed entirely. One call per distinct mint, deduped across
   // positions/wallets sharing the same token, run in parallel.
-  const distinctMints = Array.from(
-    new Set(
-      positions
-        .filter((pos) => pos.avgBuyPrice && pos.netSol > 0)
-        .map((pos) => pos.token),
-    ),
+  // Only positions the bot still holds. A position closed at a loss keeps a
+  // positive netSol in the ledger (cost minus smaller proceeds), so filtering
+  // on netSol alone re-priced every past losing trade on every dashboard
+  // poll: ~9 Jupiter quotes per /api/stats call under a rate-limited key,
+  // which is what pushed the request past the frontend's 30s timeout.
+  const openPositions = positions.filter(
+    (pos) => pos.avgBuyPrice && isBotManagedOpenPosition(pos),
   );
+  const distinctMints = Array.from(
+    new Set(openPositions.map((pos) => pos.token)),
+  );
+  // Cache-only: the position monitor keeps these prices fresh on its own
+  // tick, so a dashboard poll never spends a Jupiter request (or waits on a
+  // 429 backoff) here — see getCachedQuoteImpliedPriceSol.
   const priceEntries = await Promise.all(
     distinctMints.map(async (mint) => {
       const supplyInfo = await getOnChainMintSupply(mint);
       const price = supplyInfo.available
-        ? await getQuoteImpliedPriceSol(mint, supplyInfo.decimals)
+        ? getCachedQuoteImpliedPriceSol(mint, supplyInfo.decimals)
         : null;
       return [mint, price] as const;
     }),
@@ -63,13 +72,26 @@ export async function getPortfolioValuation(
   const priceSolByMint = new Map(priceEntries);
 
   let unrealizedPnlSol = 0;
-  for (const pos of positions) {
-    if (!pos.avgBuyPrice || pos.netSol <= 0) continue;
+  for (const pos of openPositions) {
+    const avgBuyPrice = pos.avgBuyPrice;
+    if (!avgBuyPrice) continue; // already filtered above; narrows the type
     try {
       const currentPrice = priceSolByMint.get(pos.token);
       if (currentPrice) {
+        // Same guard the position monitor applies: a reference quote that
+        // implies a >9,900% gain is a bad quote (wrong decimals, dust route),
+        // not a real price. Counting it once showed a 0.004 SOL position as
+        // +112,000 SOL of portfolio value on the dashboard.
+        const pnlPercent = (currentPrice - avgBuyPrice) / avgBuyPrice;
+        if (!isPlausiblePnl(pnlPercent)) {
+          log.warn(
+            { wallet, token: pos.token.slice(0, 8), currentPrice, avgBuyPrice },
+            "Implausible reference price — excluding this position from unrealized PnL",
+          );
+          continue;
+        }
         unrealizedPnlSol +=
-          (currentPrice - pos.avgBuyPrice) * (pos.netSol / pos.avgBuyPrice);
+          (currentPrice - avgBuyPrice) * (pos.netSol / avgBuyPrice);
       }
     } catch (err: any) {
       log.warn(

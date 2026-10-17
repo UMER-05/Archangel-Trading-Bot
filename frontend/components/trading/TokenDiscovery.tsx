@@ -55,11 +55,19 @@ export const TokenDiscovery: React.FC = () => {
     }
   }, []);
 
+  // Slow fallback poll; the list is reloaded right away when the pipeline
+  // approves or buys a token (below), which is when it actually changes.
   useEffect(() => {
     loadTokens();
-    const interval = setInterval(loadTokens, 10000);
+    const interval = setInterval(loadTokens, 60_000);
     return () => clearInterval(interval);
   }, [loadTokens]);
+
+  useEffect(() => {
+    if (latestApproved || latestBought) void loadTokens();
+    // Only the identity of the newest event matters here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [latestApproved?.mint, latestBought?.mint]);
 
   // 🔄 Live price updates from websocket
   useSocketEvent<{ tokens?: TokenItem[] }>("token_prices", (payload) => {

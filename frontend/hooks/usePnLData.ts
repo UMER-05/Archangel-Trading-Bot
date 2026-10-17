@@ -52,7 +52,9 @@ export interface PnLHistoryPoint {
   winRate: number;
 }
 
-const POLL_MS = 30000; // matches pnlBroadcaster.service.ts's own interval
+// Fallback only — the socket pushes "portfolio:pnl:update" every 30s and
+// "pnl:tokens:update" on request, so this just covers a dropped socket.
+const POLL_MS = 60_000;
 
 export function usePnLData(historyDays = 30) {
   const { lastMessage, connected, sendMessage } = useSocket();

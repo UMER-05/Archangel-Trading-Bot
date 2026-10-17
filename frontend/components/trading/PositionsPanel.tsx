@@ -76,9 +76,11 @@ export const PositionsPanel: React.FC = () => {
     }
   }, [publicKey]);
 
+  // Slow fallback only — every trade and position:update event below
+  // reloads immediately, so 15s polling was redundant load on the backend.
   useEffect(() => {
     loadPositions();
-    const t = setInterval(loadPositions, 15000);
+    const t = setInterval(loadPositions, 60_000);
     return () => clearInterval(t);
   }, [loadPositions]);
 

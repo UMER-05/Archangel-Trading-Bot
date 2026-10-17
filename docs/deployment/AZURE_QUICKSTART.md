@@ -222,9 +222,7 @@ curl https://archangel-backend.azurewebsites.net/api/stats
 ## 📚 Documentation
 
 - [Full Deployment Guide](./AZURE_DEPLOYMENT.md)
-- [Token Storage System](./STORED_TOKEN_CHECKER.md)
-- [Raydium Trading System](./RAYDIUM_TRADING_SYSTEM.md)
-- [Validation Pipeline](./VALIDATION_PIPELINE.md)
+- [Validation Pipeline](../VALIDATION_PIPELINE.md)
 
 ## 🆘 Support
 

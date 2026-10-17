@@ -1,6 +1,6 @@
 # ArchAngel Trading Bot
 
-A sophisticated Solana trading bot with automated token discovery, validation pipeline, and risk management features for trading on Raydium and Pump.fun.
+A Solana trading bot with automated token discovery, a multi-stage validation pipeline, Jupiter-routed swaps with a native Raydium execution engine, and risk management.
 
 ## 🖥️ Desktop App Available!
 
@@ -12,26 +12,25 @@ A sophisticated Solana trading bot with automated token discovery, validation pi
 - ✅ System tray integration
 - ✅ Clean desktop GUI
 
-👉 **See [DESKTOP_APP_BUILD.md](DESKTOP_APP_BUILD.md) for build instructions**
+👉 **See [docs/desktop/DESKTOP_APP_BUILD.md](docs/desktop/DESKTOP_APP_BUILD.md) for build instructions**
 
 ---
 
 ## Features
 
-- 🤖 **Automated Trading**: Auto-buy newly graduated tokens from Pump.fun to Raydium
-- 🔍 **Pool Monitoring**: Real-time Raydium pool detection and validation
-- 📊 **Multi-Stage Validation**: Comprehensive token validation pipeline
-- 💰 **Tranche Buying**: Split large buys into multiple tranches to minimize price impact
-- 🛡️ **Risk Management**: Wallet balance monitoring and emergency exit mechanisms
-- 📈 **Live P&L Tracking**: Real-time portfolio performance monitoring
-- ⚡ **Fast Mode Trading**: Optimized quote fetching for manual trades (3 retries ~900ms)
-- 🎯 **Manual Buy Panel**: Execute trades directly from the UI with timeout optimization
+- 🤖 **Automated Trading**: Discovers new tokens from the Solami Blur stream and auto-buys candidates that pass the pipeline
+- 🔍 **Pool Monitoring**: Pool availability and tradeability checks before every buy
+- 📊 **Multi-Stage Validation**: Safety checks, market-behaviour analysis and Jupiter tradeability validation
+- 🛡️ **Risk Management**: Wallet balance monitoring, position monitor and emergency exit
+- 📈 **Live P&L Tracking**: Real-time portfolio valuation and stats over Socket.IO
+- ⚡ **Jupiter + Native Execution**: Jupiter quotes with a native Raydium CPMM executor (see `docs/`)
+- 🎯 **Manual Buy / Sell**: Execute trades directly from the UI
 
 ## Architecture
 
 - **Backend**: Node.js/TypeScript with Express.js
 - **Frontend**: Next.js with React and TypeScript
-- **Blockchain**: Solana (Raydium DEX integration)
+- **Blockchain**: Solana (Jupiter routing, Raydium native execution)
 - **Real-time**: Socket.io for live updates
 
 ## Prerequisites
@@ -178,7 +177,6 @@ Configure trading parameters in the UI or via the trader config modal:
 - **Auto-Buy Amount**: SOL amount per automatic purchase
 - **Min Liquidity**: Minimum pool liquidity (SOL) required
 - **Max Slippage**: Maximum allowed slippage percentage
-- **Tranche Count**: Number of splits for large orders
 - **Take Profit / Stop Loss**: Exit strategy thresholds
 
 ### Validation Pipeline
@@ -186,7 +184,7 @@ Configure trading parameters in the UI or via the trader config modal:
 Tokens go through multiple validation stages:
 
 1. **Token Data Retrieval**: Fetch metadata and account info
-2. **Raydium Routing Test**: Verify buy/sell routes exist
+2. **Jupiter Routing Test**: Verify buy/sell routes exist
 3. **Liquidity Verification**: Ensure sufficient pool liquidity
 4. **Security Checks**: Validate token safety metrics
 
@@ -198,10 +196,11 @@ ArchAngel-Bot/
 │   ├── src/
 │   │   ├── routes/          # API endpoints
 │   │   ├── services/        # Core business logic
-│   │   │   ├── raydium/     # Raydium DEX integration
+│   │   │   ├── execution/   # Native swap engine (Raydium CPMM, Jito sender)
+│   │   │   ├── blurStream.service.ts
+│   │   │   ├── candidatePipeline.service.ts
 │   │   │   ├── validationPipeline.service.ts
-│   │   │   ├── raydiumPoolListener.service.ts
-│   │   │   ├── trancheBuyer.service.ts
+│   │   │   ├── jupiter.service.ts
 │   │   │   └── ...
 │   │   ├── types/           # TypeScript definitions
 │   │   └── utils/           # Helper functions
@@ -219,18 +218,6 @@ ArchAngel-Bot/
 
 ## Key Features Explained
 
-### Fast Mode Trading
-
-Manual trades from the UI use an optimized "fast mode" with only 3 retry attempts (~900ms timeout) for quick response times, while the auto-trader uses full 20-retry mode (~6s timeout) to catch newly created pools.
-
-### Tranche Buying
-
-Large buy orders are automatically split into multiple smaller transactions to:
-
-- Minimize price impact
-- Reduce slippage
-- Improve execution price
-
 ### Emergency Exit
 
 The bot includes emergency exit mechanisms to protect capital:
@@ -241,11 +228,11 @@ The bot includes emergency exit mechanisms to protect capital:
 
 ## API Endpoints
 
-- `POST /api/trade/prepare` - Prepare trade (fast mode)
-- `POST /api/trade/execute` - Execute prepared trade
-- `GET /api/tokens/discovered` - Get discovered tokens
-- `GET /api/portfolio/pnl` - Get P&L data
-- `GET /api/config/trader` - Get trader configuration
+- `POST /api/trade/prepare` - Build a swap transaction for the user's wallet to sign
+- `POST /api/trade/confirm` - Confirm a signed swap
+- `GET /api/tokens/active` - Tokens currently tracked
+- `GET /api/pnl/portfolio` - Portfolio P&L
+- `GET /api/positions` - Open positions
 - WebSocket events for real-time updates
 
 ## Troubleshooting
@@ -291,13 +278,14 @@ These are excluded via `.gitignore` for your protection.
 
 ## Documentation
 
-Additional documentation available in the repository:
+All documentation lives in [docs/](docs/README.md):
 
-- [Raydium Trading System](RAYDIUM_TRADING_SYSTEM.md)
-- [Validation Pipeline](VALIDATION_PIPELINE.md)
-- [Tranche Buying Implementation](2_TRANCHE_BUYING_IMPLEMENTATION.md)
-- [Risk Management](WALLET_BALANCE_RISK_MANAGEMENT.md)
-- [Pool Monitoring](POOL_MONITORING.md)
+- [Native swap engine specs](docs/native-swap-fund-safety-spec.md)
+- [Validation Pipeline](docs/VALIDATION_PIPELINE.md)
+- [Risk Management](docs/WALLET_BALANCE_RISK_MANAGEMENT.md)
+- [Pool Monitoring](docs/POOL_MONITORING.md)
+- [Socket.IO Events](docs/SOCKET_EVENTS.md)
+- [Deployment guides](docs/deployment/)
 
 ## License
 

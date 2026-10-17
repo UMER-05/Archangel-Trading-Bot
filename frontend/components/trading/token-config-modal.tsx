@@ -248,6 +248,23 @@ export function TokenConfigModal({
     }
   };
 
+  // Close on Escape and stop the page behind the modal from scrolling while
+  // it is open — without the lock, a tall custom-config form scrolls the
+  // page underneath instead of the modal body on touch devices.
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   // Debug button states
@@ -264,7 +281,7 @@ export function TokenConfigModal({
 
   return (
     <div
-      className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+      className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-start sm:items-center justify-center z-50 p-3 sm:p-4"
       onClick={(e) => {
         // Close if clicking the backdrop
         if (e.target === e.currentTarget) {
@@ -273,12 +290,15 @@ export function TokenConfigModal({
       }}
     >
       <div
-        className="bg-gray-900 border border-gray-800 rounded-lg max-w-lg w-full shadow-2xl"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="token-config-title"
+        className="bg-gray-900 border border-gray-800 rounded-lg max-w-lg w-full shadow-2xl flex flex-col max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-2rem)] overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Wallet Not Connected Warning */}
         {!isWalletConnected && (
-          <div className="bg-yellow-900/30 border-b border-yellow-700/50 p-4 flex items-start gap-3">
+          <div className="shrink-0 bg-yellow-900/30 border-b border-yellow-700/50 p-3 sm:p-4 flex items-start gap-3">
             <AlertCircle className="w-5 h-5 text-yellow-400 flex-shrink-0 mt-0.5" />
             <div className="flex-1">
               <p className="text-yellow-200 font-semibold text-sm">
@@ -294,24 +314,31 @@ export function TokenConfigModal({
         )}
 
         {/* Header */}
-        <div className="flex items-center justify-between p-6 border-b border-gray-800">
-          <div className="flex items-center gap-3">
-            <Target className="w-6 h-6 text-purple-400" />
-            <div>
-              <h2 className="text-xl font-bold text-white">Configure Trade</h2>
-              <p className="text-sm text-gray-400">{token.symbol}</p>
+        <div className="shrink-0 flex items-center justify-between gap-3 p-4 sm:p-6 border-b border-gray-800">
+          <div className="flex items-center gap-3 min-w-0">
+            <Target className="w-6 h-6 text-purple-400 shrink-0" />
+            <div className="min-w-0">
+              <h2
+                id="token-config-title"
+                className="text-lg sm:text-xl font-bold text-white"
+              >
+                Configure Trade
+              </h2>
+              <p className="text-sm text-gray-400 truncate">{token.symbol}</p>
             </div>
           </div>
           <button
+            type="button"
             onClick={onClose}
-            className="text-gray-400 hover:text-white transition-colors"
+            aria-label="Close"
+            className="shrink-0 -m-2 p-2 text-gray-400 hover:text-white transition-colors"
           >
             <X className="w-6 h-6" />
           </button>
         </div>
 
         {/* Content */}
-        <div className="p-6 space-y-6">
+        <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-4 sm:p-6 space-y-5 sm:space-y-6">
           {/* Current Info */}
           <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-4">
             <div className="grid grid-cols-2 gap-4 text-sm">
@@ -359,8 +386,8 @@ export function TokenConfigModal({
           </div>
 
           {/* Use Custom Config Toggle */}
-          <div className="flex items-center justify-between bg-blue-900/20 border border-blue-800 rounded-lg p-4">
-            <div>
+          <div className="flex items-center justify-between gap-3 bg-blue-900/20 border border-blue-800 rounded-lg p-4">
+            <div className="min-w-0">
               <p className="text-white font-medium">Custom Configuration</p>
               <p className="text-sm text-gray-400">
                 Override global settings for this token
@@ -374,7 +401,10 @@ export function TokenConfigModal({
                   useCustomConfig: !formData.useCustomConfig,
                 })
               }
-              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary/50 focus:ring-offset-2 focus:ring-offset-gray-900 ${
+              role="switch"
+              aria-checked={formData.useCustomConfig}
+              aria-label="Use custom configuration for this token"
+              className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary/50 focus:ring-offset-2 focus:ring-offset-gray-900 ${
                 formData.useCustomConfig ? "bg-primary" : "bg-gray-700"
               }`}
             >
@@ -390,8 +420,8 @@ export function TokenConfigModal({
             <>
               {/* Trigger Market Cap */}
               <div>
-                <div className="flex items-center gap-2 mb-2">
-                  <TrendingUp className="w-4 h-4 text-green-400" />
+                <div className="flex items-start gap-2 mb-2">
+                  <TrendingUp className="w-4 h-4 text-green-400 shrink-0 mt-0.5" />
                   <label className="text-sm font-medium text-gray-300">
                     Trigger Market Cap (SOL) - Optional
                   </label>
@@ -425,7 +455,7 @@ export function TokenConfigModal({
               </div>
 
               {/* TP/SL */}
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-300 mb-2">
                     Take Profit (%)
@@ -523,9 +553,9 @@ export function TokenConfigModal({
         </div>
 
         {/* Footer */}
-        <div className="flex flex-col gap-3 p-6 border-t border-gray-800 bg-gray-800/50">
+        <div className="shrink-0 flex flex-col gap-3 p-4 sm:p-6 border-t border-gray-800 bg-gray-800/50">
           {/* Trade Action Buttons */}
-          <div className="flex items-center gap-3">
+          <div className="grid grid-cols-2 gap-3">
             <button
               type="button"
               onClick={(e) => {
@@ -535,7 +565,7 @@ export function TokenConfigModal({
                 handleTrade("buy");
               }}
               disabled={saving || tradeLoading || !isWalletConnected}
-              className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-green-600 hover:bg-green-500 text-white font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+              className="flex items-center justify-center gap-2 px-4 py-3 bg-green-600 hover:bg-green-500 text-white font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
             >
               <ShoppingCart className="w-4 h-4" />
               {tradeLoading ? "Buying..." : "Buy Now"}
@@ -550,15 +580,16 @@ export function TokenConfigModal({
                 handleTrade("sell");
               }}
               disabled={saving || tradeLoading || !isWalletConnected}
-              className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-red-600 hover:bg-red-500 text-white font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+              className="flex items-center justify-center gap-2 px-4 py-3 bg-red-600 hover:bg-red-500 text-white font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
             >
               <TrendingDown className="w-4 h-4" />
               {tradeLoading ? "Selling..." : "Sell Now"}
             </button>
           </div>
 
-          {/* Auto-Trade & Save Buttons */}
-          <div className="flex items-center gap-3">
+          {/* Auto-Trade & Save Buttons — auto-trade spans the full width on
+              phones, Save/Close share the row below it */}
+          <div className="grid grid-cols-2 sm:flex sm:items-center gap-3">
             <button
               type="button"
               onClick={(e) => {
@@ -568,7 +599,7 @@ export function TokenConfigModal({
                 handleAutoTrade();
               }}
               disabled={saving || tradeLoading || !isWalletConnected}
-              className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-primary hover:bg-primary-hover text-white font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+              className="col-span-2 sm:col-span-1 sm:flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-primary hover:bg-primary-hover text-white font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
             >
               <Zap className="w-4 h-4" />
               {saving ? "Enabling..." : "Enable Auto-Trade"}
@@ -583,7 +614,7 @@ export function TokenConfigModal({
                 handleSave();
               }}
               disabled={saving || tradeLoading}
-              className="px-6 py-3 bg-base-300 hover:bg-base-300/70 text-white font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+              className="px-4 sm:px-6 py-3 bg-base-300 hover:bg-base-300/70 text-white font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer whitespace-nowrap"
             >
               {saving ? "Saving..." : "Save Config"}
             </button>
@@ -596,7 +627,7 @@ export function TokenConfigModal({
                 e.stopPropagation();
                 onClose();
               }}
-              className="px-4 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors cursor-pointer"
+              className="px-4 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
               disabled={saving || tradeLoading}
             >
               Close

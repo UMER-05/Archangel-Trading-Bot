@@ -286,7 +286,45 @@ export interface MintSupplyInfo {
  * `available: false` on an RPC error or an account that isn't a parsed SPL
  * mint — callers must fail closed (e.g. treat mcap as unknown, not zero).
  */
+// Every price lookup (positions route, stats route, monitor tick, pnl
+// tracker) calls this first to get decimals — one RPC round-trip per open
+// position per caller per refresh. Decimals never change and supply moves
+// slowly, so one answer per mint is reused for a short while, and concurrent
+// callers share a single in-flight request instead of each hitting the RPC.
+const MINT_SUPPLY_TTL_MS = Number(process.env.MINT_SUPPLY_CACHE_MS ?? 60_000);
+const mintSupplyCache = new Map<
+  string,
+  { info: MintSupplyInfo; fetchedAt: number }
+>();
+const mintSupplyInflight = new Map<string, Promise<MintSupplyInfo>>();
+
 export async function getOnChainMintSupply(
+  tokenMint: string,
+): Promise<MintSupplyInfo> {
+  const cached = mintSupplyCache.get(tokenMint);
+  if (cached && Date.now() - cached.fetchedAt < MINT_SUPPLY_TTL_MS) {
+    return cached.info;
+  }
+  let inflight = mintSupplyInflight.get(tokenMint);
+  if (!inflight) {
+    inflight = fetchOnChainMintSupply(tokenMint)
+      .then((info) => {
+        // Only successful lookups are reused; a transient RPC failure is
+        // retried on the next call rather than cached as "unavailable".
+        if (info.available) {
+          mintSupplyCache.set(tokenMint, { info, fetchedAt: Date.now() });
+        }
+        return info;
+      })
+      .finally(() => {
+        mintSupplyInflight.delete(tokenMint);
+      });
+    mintSupplyInflight.set(tokenMint, inflight);
+  }
+  return inflight;
+}
+
+async function fetchOnChainMintSupply(
   tokenMint: string,
 ): Promise<MintSupplyInfo> {
   try {

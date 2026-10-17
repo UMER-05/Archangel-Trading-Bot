@@ -1,6 +1,6 @@
 import { Router } from "express";
 import dbService from "../services/db.service.js";
-import { getQuoteImpliedPriceSol } from "../services/jupiter.service.js";
+import { getCachedQuoteImpliedPriceSol } from "../services/jupiter.service.js";
 import { getOnChainMintSupply } from "../services/tokenSafetyChecks.service.js";
 import { getLogger } from "../utils/logger.js";
 import { isOpenPosition } from "../utils/positionState.js";
@@ -37,15 +37,15 @@ router.get("/", async (req, res) => {
       positions.map(async (p) => {
         let currentPrice = 0; // SOL-denominated, same unit as avgBuyPrice
         try {
-          // Fair-value price from a small reference Jupiter quote — see
-          // getQuoteImpliedPriceSol's own doc comment for the tradeoff.
-          // Birdeye has been removed from this codebase entirely; this is
-          // the only price source left for display purposes.
+          // Cache-only read of the reference price the position monitor
+          // already fetches every 5s — this request never waits on Jupiter
+          // (see getCachedQuoteImpliedPriceSol). Decimals come from a cached
+          // RPC lookup. A position the cache hasn't seen yet shows price 0
+          // this once and is filled in on the next refresh.
           const supplyInfo = await getOnChainMintSupply(p.token);
           if (supplyInfo.available) {
             currentPrice =
-              (await getQuoteImpliedPriceSol(p.token, supplyInfo.decimals)) ??
-              0;
+              getCachedQuoteImpliedPriceSol(p.token, supplyInfo.decimals) ?? 0;
           }
         } catch (err: any) {
           log.warn(

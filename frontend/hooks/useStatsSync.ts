@@ -8,10 +8,15 @@ import { useStats } from "@hooks/useStats";
 import { useSocket } from "@hooks/useSocket";
 import { fetcher } from "@lib/utils";
 
+// Slow fallback only. The socket pushes "stats:update" after every trade, so
+// polling just covers a dropped socket. This used to be 10s — one of nine
+// timers that together hit the backend ~20 times a minute per open tab.
+const STATS_POLL_MS = 60_000;
+
 /**
  * Hybrid stats sync:
- *  - Polls /api/stats every 10s
- *  - Listens for socket "stats:update"
+ *  - Listens for socket "stats:update" (primary)
+ *  - Polls /api/stats every 60s as a fallback
  *  - Writes into Zustand store
  */
 export const useStatsSync = () => {
@@ -98,7 +103,9 @@ export const useStatsSync = () => {
         }));
       } catch (err) {
         console.error("❌ Failed to fetch stats:", err);
-        toast.error("Unable to load dashboard stats.");
+        // One toast, replaced in place on repeat failures — not a new popup
+        // per poll while the backend is down.
+        toast.error("Unable to load dashboard stats.", { id: "stats-fetch" });
       } finally {
         // Loading state must clear even on failure, otherwise the panels
         // gated on it (StatsPanel, TradeHistory) show a spinner forever.
@@ -107,7 +114,7 @@ export const useStatsSync = () => {
     };
 
     fetchStats();
-    const interval = setInterval(fetchStats, 10000);
+    const interval = setInterval(fetchStats, STATS_POLL_MS);
     return () => clearInterval(interval);
   }, [updateStats, setLoading, publicKey]);
 

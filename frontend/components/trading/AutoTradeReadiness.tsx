@@ -42,7 +42,7 @@ interface AutoTradeReadinessProps {
 
 // tradesTaken only changes when the bot buys; poll it gently so the cap
 // warning appears without a page reload.
-const CONFIG_REFRESH_MS = 30_000;
+const CONFIG_REFRESH_MS = 120_000;
 
 export function AutoTradeReadiness({
   compact = false,

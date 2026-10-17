@@ -1,3 +1,5 @@
+> **Status note (Oct 2026):** this document predates the move to Jupiter-based execution. The services it describes still exist (`validationPipeline.service.ts`, `tokenLifecycle.service.ts`), but references to `tokenDiscovery.service.ts`, `birdeye.service.ts` and `flux.service.ts` are historical; discovery now runs through `blurStream.service.ts` → `candidatePipeline.service.ts`.
+
 # Token Lifecycle Validation System
 
 ## Overview
@@ -627,7 +629,6 @@ curl http://localhost:4000/api/tokens/lifecycle/KNOWN_PUMPFUN_TOKEN
 
 - [POOL_MONITORING.md](./POOL_MONITORING.md) - Pool availability monitoring system
 - [SOCKET_EVENTS.md](./SOCKET_EVENTS.md) - Socket.io event reference
-- [MARKET_CAP_FILTERING.md](./MARKET_CAP_FILTERING.md) - Token filtering logic
 
 ## Support
 
@@ -637,3 +638,4 @@ For issues or questions about lifecycle validation:
 2. Test validation endpoint: `/api/tokens/lifecycle/:tokenMint`
 3. Review this documentation for troubleshooting steps
 4. Verify RPC endpoint is operational
+

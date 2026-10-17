@@ -133,10 +133,15 @@ router.get("/history", async (req, res) => {
     const wallet =
       typeof req.query.wallet === "string" ? req.query.wallet : undefined;
     if (!wallet) {
-      return res.json({ success: true, trades: [] });
+      return res.json({ success: true, trades: [], total: 0 });
     }
-    const trades = await db.getTrades(limit, false, wallet);
-    return res.json({ success: true, trades });
+    // `total` is the wallet's full trade count; `trades` is just the latest
+    // page, so the dashboard can show "N trades" without fetching them all.
+    const [trades, total] = await Promise.all([
+      db.getTrades(limit, false, wallet),
+      db.countTrades(wallet),
+    ]);
+    return res.json({ success: true, trades, total });
   } catch (err: any) {
     logger.error("❌ Failed to load trade history:", err.message);
     return res.status(500).json({ success: false, message: err.message });
