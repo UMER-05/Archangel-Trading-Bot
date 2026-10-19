@@ -51,7 +51,9 @@ const WalletDataContext = createContext<WalletState>({
   refreshBalance: async () => null,
 });
 
-const BALANCE_POLL_MS = 10_000;
+// Fallback only: the balance is also refreshed the moment a trade or deposit
+// event arrives over the socket (below), so a 10s poll was pure overhead.
+const BALANCE_POLL_MS = 60_000;
 
 function rpcEndpoints(): string[] {
   return [
@@ -141,12 +143,25 @@ export const WalletDataProvider: React.FC<{ children: React.ReactNode }> = ({
     return null;
   }, [solanaWallet.publicKey, solanaWallet.connected, connections]);
 
-  // Balance: refresh on connect, then poll — once for the whole app.
+  // Balance: refresh on connect, on every trade/deposit event, and on a slow
+  // fallback poll — once for the whole app.
   useEffect(() => {
     if (!connected || !publicKey) return;
     void refreshBalance();
     const id = setInterval(() => void refreshBalance(), BALANCE_POLL_MS);
-    return () => clearInterval(id);
+    // A manual trade or a deposit changes this wallet's SOL right away;
+    // the backend emits both to this wallet's own room.
+    const onChange = () => {
+      // Give the chain a moment to confirm before re-reading.
+      setTimeout(() => void refreshBalance(), 2_000);
+    };
+    socket.on("tradeFeed", onChange);
+    socket.on("walletDeposit", onChange);
+    return () => {
+      clearInterval(id);
+      socket.off("tradeFeed", onChange);
+      socket.off("walletDeposit", onChange);
+    };
   }, [connected, publicKey, refreshBalance]);
 
   // "Sign up" the wallet: generates its custodial trading wallet on first

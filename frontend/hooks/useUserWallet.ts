@@ -5,6 +5,7 @@ import { useCallback } from "react";
 import useSWR from "swr";
 import { useWallet as useSolanaWallet } from "@solana/wallet-adapter-react";
 import { fetcher } from "@lib/utils";
+import { useSocketEvent } from "@hooks/useSocketEvent";
 
 interface UserWalletResponse {
   success: boolean;
@@ -59,7 +60,9 @@ interface UserWalletState {
   refresh: () => Promise<void>;
 }
 
-const POLL_MS = 15_000;
+// Fallback only: a deposit or a bot trade re-fetches immediately via the
+// socket events below. 15s polling per tab was one of the heavier timers.
+const POLL_MS = 60_000;
 
 /**
  * The bot-generated custodial trading wallet for the currently connected
@@ -90,6 +93,11 @@ export function useUserWallet(): UserWalletState {
   const refresh = useCallback(async () => {
     await mutate();
   }, [mutate]);
+
+  // The trading wallet's balance/slots change exactly when the bot trades or
+  // a deposit lands — both are pushed to this wallet's socket room.
+  useSocketEvent("tradeFeed", () => void mutate());
+  useSocketEvent("walletDeposit", () => void mutate());
 
   const ok = data?.success ? data : null;
   const message =

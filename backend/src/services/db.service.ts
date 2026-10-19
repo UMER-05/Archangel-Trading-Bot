@@ -731,6 +731,21 @@ export async function getTrades(
   return tradesCol!.find(filter).sort({ timestamp: -1 }).limit(limit).toArray();
 }
 
+/**
+ * How many real trades this wallet has made in total — the Live Trades panel
+ * only lists the most recent page, so the count has to come from the DB.
+ */
+export async function countTrades(
+  viewerWallet?: string,
+  includeSimulated = false,
+): Promise<number> {
+  if (!db) await connect();
+  return tradesCol!.countDocuments({
+    ...(includeSimulated ? {} : { simulated: { $ne: true } }),
+    ...viewerWalletFilter(viewerWallet),
+  });
+}
+
 // The dust floor and the "is this position open?" rule live in
 // utils/positionState.ts, shared with the monitor, the buy pipeline and the
 // dashboard so they can't disagree (a position sold at a loss used to read as
@@ -1650,5 +1665,6 @@ export default {
   setGlobalAutoTradeEnabled,
   getRecentTradableTokens,
   getServerClockSkewMs,
+  countTrades,
   close,
 };

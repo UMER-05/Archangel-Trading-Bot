@@ -4,7 +4,8 @@
 import { useEffect, useState } from "react";
 import { fetcher } from "@lib/utils";
 
-const POLL_MS = 60000;
+// SOL/USD only feeds "~$X" hints; 5 minutes is plenty.
+const POLL_MS = 300_000;
 
 /**
  * Live SOL/USD price for "~$X" display estimates. Several modals used to

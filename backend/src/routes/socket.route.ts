@@ -2,6 +2,7 @@ import { Server, Socket } from "socket.io";
 import { getLogger } from "../utils/logger.js";
 import { getLatestTokens } from "../services/tokenPrice.service.js";
 import dbService from "../services/db.service.js";
+import { getWalletStats } from "../services/stats.service.js";
 import { poolMonitor } from "../services/poolMonitor.service.js";
 import { emitToWalletOrGlobal } from "../utils/walletSocket.js";
 import { verifyWalletAuth } from "../utils/walletAuth.js";
@@ -73,13 +74,11 @@ export function registerSocketHandlers(io: Server) {
       );
     }
 
-    /** INITIAL STATS SNAPSHOT */
-    try {
-      const stats = await dbService.getStats();
-      socket.emit("stats:update", stats);
-    } catch (err: any) {
-      logger.warn("Failed broadcasting initial stats");
-    }
+    // No initial stats snapshot here: before "identify" there is no wallet,
+    // so this could only ever send zeroed stats — which overwrote the numbers
+    // the dashboard had already loaded over HTTP (the cards visibly jumped to
+    // 0 on every connect/reconnect). The client asks via "stats:request"
+    // once identified.
 
     /** CONFIRM CONNECTION */
     socket.emit("connection", { status: "connected" });
@@ -237,7 +236,7 @@ export function registerSocketHandlers(io: Server) {
       });
 
       if (wallet) {
-        const stats = await dbService.getStats(wallet);
+        const stats = await getWalletStats(wallet);
         emitToWalletOrGlobal(io, wallet, "stats:update", stats);
       }
     });
@@ -248,7 +247,7 @@ export function registerSocketHandlers(io: Server) {
       emitToWalletOrGlobal(io, wallet, "tradeFeed", payload);
 
       if (wallet) {
-        const stats = await dbService.getStats(wallet);
+        const stats = await getWalletStats(wallet);
         emitToWalletOrGlobal(io, wallet, "stats:update", stats);
       }
     });
@@ -265,7 +264,7 @@ export function registerSocketHandlers(io: Server) {
      * connected) correctly gets back zeroed stats from getStats(undefined).
      */
     socket.on("stats:request", async () => {
-      const stats = await dbService.getStats(socket.data?.wallet);
+      const stats = await getWalletStats(socket.data?.wallet);
       socket.emit("stats:update", stats);
     });
 

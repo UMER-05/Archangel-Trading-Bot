@@ -432,7 +432,7 @@ class JupiterService {
       }
 
       const signature = await this.sendRaw(connection, tx);
-      await connection.confirmTransaction(
+      const confirmation = await connection.confirmTransaction(
         {
           signature,
           blockhash: tx.message.recentBlockhash,
@@ -440,6 +440,20 @@ class JupiterService {
         },
         "confirmed",
       );
+
+      // "Confirmed" only means the transaction LANDED in a block. A swap that
+      // reverted on-chain (slippage exceeded, pool state changed, account
+      // missing) still confirms — with `err` set — and the wallet keeps its
+      // tokens, minus the fee. This used to be ignored, so every reverted
+      // auto-sell was recorded as a real sale with the quoted proceeds and the
+      // position was marked closed while the tokens stayed in the hot wallet.
+      // The on-chain scan of one wallet showed 20+ such "sold" positions.
+      const onChainErr = confirmation?.value?.err;
+      if (onChainErr) {
+        const error = `Transaction ${signature} landed but failed on-chain: ${JSON.stringify(onChainErr)}`;
+        LOG.error({ signature, err: onChainErr }, "Jupiter swap reverted on-chain");
+        return { success: false, error };
+      }
 
       LOG.info({ signature }, "Jupiter swap confirmed");
       return { success: true, signature, simulated: false };
@@ -546,6 +560,94 @@ export async function getQuoteImpliedPriceSol(
   tokenDecimals: number,
 ): Promise<number | null> {
   if (!(tokenDecimals >= 0)) return null;
+
+  const now = Date.now();
+  const entry = priceProbeCache.get(tokenMint);
+
+  // Fresh enough — every caller (positions route, stats route, position
+  // monitor, pnl tracker) shares this one answer instead of each firing its
+  // own Jupiter quote for the same mint within the same few seconds.
+  if (entry && now - entry.attemptedAt < PRICE_PROBE_TTL_MS) {
+    return staleOrNull(entry, now);
+  }
+
+  // Coalesce: one in-flight Jupiter fetch per mint, no matter how many
+  // concurrent callers ask. The fetch keeps running after any caller gives
+  // up waiting below, so the cache still gets refreshed for the next one.
+  let inflight = priceProbeInflight.get(tokenMint);
+  if (!inflight) {
+    inflight = fetchQuoteImpliedPriceSol(tokenMint, tokenDecimals)
+      .then((price) => {
+        const prev = priceProbeCache.get(tokenMint);
+        priceProbeCache.set(tokenMint, {
+          attemptedAt: Date.now(),
+          price: price ?? prev?.price ?? null,
+          priceAt: price != null ? Date.now() : prev?.priceAt ?? 0,
+        });
+        return price;
+      })
+      .finally(() => {
+        priceProbeInflight.delete(tokenMint);
+      });
+    priceProbeInflight.set(tokenMint, inflight);
+  }
+
+  // Hard deadline: under a Jupiter 429 storm a single quote can spend
+  // tens of seconds in retry backoff. A dashboard request (or a monitor
+  // tick) must not hang on that — after the deadline, fall back to the last
+  // known price if it's recent enough, otherwise report "unknown".
+  const result = await Promise.race([
+    inflight.then((price) => ({ settled: true as const, price })),
+    new Promise<{ settled: false }>((resolve) =>
+      setTimeout(() => resolve({ settled: false }), PRICE_PROBE_MAX_WAIT_MS),
+    ),
+  ]);
+
+  if (result.settled) {
+    if (result.price != null) return result.price;
+    return staleOrNull(priceProbeCache.get(tokenMint), Date.now());
+  }
+  LOG.warn(
+    { tokenMint: tokenMint.slice(0, 8), waitedMs: PRICE_PROBE_MAX_WAIT_MS },
+    "Price probe still pending past deadline — using last known price",
+  );
+  return staleOrNull(entry, Date.now());
+}
+
+/**
+ * Cache-only price for DASHBOARD reads (positions route, stats/valuation).
+ * Never waits on Jupiter: returns the last known price if it is recent enough
+ * (see PRICE_PROBE_STALE_MAX_MS), else null. If the cache has nothing fresh and
+ * nothing in flight, one background refresh is started so the NEXT request can
+ * be answered — the caller still gets an immediate answer this time.
+ *
+ * The position monitor refreshes the cache for every bot-managed position
+ * on its own 5-second tick via getQuoteImpliedPriceSol, so in practice the
+ * dashboard reads prices the bot already paid for. This is what stops ten
+ * dashboard polls a minute from competing with the buy pipeline for the
+ * Jupiter rate limit (which is what was delaying buys).
+ */
+export function getCachedQuoteImpliedPriceSol(
+  tokenMint: string,
+  tokenDecimals: number,
+): number | null {
+  if (!(tokenDecimals >= 0)) return null;
+  const now = Date.now();
+  const entry = priceProbeCache.get(tokenMint);
+  const fresh = entry && now - entry.attemptedAt < PRICE_PROBE_TTL_MS;
+  if (!fresh && !priceProbeInflight.has(tokenMint)) {
+    // Fire-and-forget; getQuoteImpliedPriceSol owns the inflight map and the
+    // cache write, so this shares one fetch with any concurrent caller.
+    void getQuoteImpliedPriceSol(tokenMint, tokenDecimals).catch(() => null);
+  }
+  return staleOrNull(entry, now);
+}
+
+/** The uncached, uncoalesced single Jupiter quote behind getQuoteImpliedPriceSol. */
+async function fetchQuoteImpliedPriceSol(
+  tokenMint: string,
+  tokenDecimals: number,
+): Promise<number | null> {
   const quote = await jupiterService.getQuote(
     SOL_MINT,
     tokenMint,
@@ -556,6 +658,36 @@ export async function getQuoteImpliedPriceSol(
   const outTokens = Number(quote.outAmount) / 10 ** tokenDecimals;
   if (!(outTokens > 0)) return null;
   return PRICE_PROBE_LAMPORTS / 1e9 / outTokens;
+}
+
+interface PriceProbeEntry {
+  attemptedAt: number; // last time a fetch finished (success or not)
+  price: number | null; // last successfully fetched price
+  priceAt: number; // when that price was fetched
+}
+
+// How long one fetched price is reused by every caller before refetching.
+const PRICE_PROBE_TTL_MS = Number(process.env.PRICE_PROBE_CACHE_MS ?? 15_000);
+// How long a caller waits on an in-flight fetch before settling for the
+// last known price. Comfortably under the frontend's 30s request timeout
+// even with the RPC decimals lookup in front of it.
+const PRICE_PROBE_MAX_WAIT_MS = Number(
+  process.env.PRICE_PROBE_MAX_WAIT_MS ?? 8_000,
+);
+// Oldest last-known price still worth showing instead of "unknown".
+const PRICE_PROBE_STALE_MAX_MS = Number(
+  process.env.PRICE_PROBE_STALE_MAX_MS ?? 5 * 60_000,
+);
+
+const priceProbeCache = new Map<string, PriceProbeEntry>();
+const priceProbeInflight = new Map<string, Promise<number | null>>();
+
+function staleOrNull(
+  entry: PriceProbeEntry | undefined,
+  now: number,
+): number | null {
+  if (!entry || entry.price == null) return null;
+  return now - entry.priceAt <= PRICE_PROBE_STALE_MAX_MS ? entry.price : null;
 }
 
 // Named convenience exports matching the old raydium.service.ts call-site shape,

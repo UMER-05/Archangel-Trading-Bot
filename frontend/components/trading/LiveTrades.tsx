@@ -2,7 +2,6 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
 import { useWallet as useSolanaWallet } from "@solana/wallet-adapter-react";
 import { TerminalSquare } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -19,11 +18,30 @@ type TradeRow = {
   signature?: string | null;
 };
 
+// "16 Oct 23:32:17" — the feed spans days (positions can stay open overnight),
+// so a bare clock time was ambiguous. 24-hour, local time zone.
+const formatWhen = (value: string | number | Date | undefined): string => {
+  const d = value ? new Date(value) : new Date();
+  if (Number.isNaN(d.getTime())) return "";
+  return d
+    .toLocaleString("en-GB", {
+      day: "2-digit",
+      month: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    })
+    .replace(",", "");
+};
+
 export const LiveTrades: React.FC = () => {
   const { lastMessage, connected } = useSocket();
   const { publicKey } = useSolanaWallet();
-  const router = useRouter();
   const [trades, setTrades] = useState<TradeRow[]>([]);
+  // The wallet's lifetime trade count from the backend; the list below only
+  // holds the most recent page, so it can't be derived from trades.length.
+  const [totalTrades, setTotalTrades] = useState<number | null>(null);
   const feedRef = useRef<HTMLDivElement | null>(null);
 
   // Clear the instant the connected wallet changes, before the backfill
@@ -31,6 +49,7 @@ export const LiveTrades: React.FC = () => {
   // on screen for the round-trip it takes to load the new wallet's own.
   useEffect(() => {
     setTrades([]);
+    setTotalTrades(null);
   }, [publicKey]);
 
   // Backfill recent real trades on mount (and again on wallet change) — this
@@ -47,18 +66,19 @@ export const LiveTrades: React.FC = () => {
       : "";
     (async () => {
       try {
-        const res = await fetcher<{ success: boolean; trades: any[] }>(
-          `/api/trade/history?limit=50${walletParam}`
-        );
+        const res = await fetcher<{
+          success: boolean;
+          trades: any[];
+          total?: number;
+        }>(`/api/trade/history?limit=50${walletParam}`);
         if (!mounted || !res?.success || !Array.isArray(res.trades)) return;
+        if (typeof res.total === "number") setTotalTrades(res.total);
         // No need to clear here — the dedicated effect above already
         // cleared trades the instant publicKey changed.
         const rows: TradeRow[] = res.trades.map((t) => ({
           id: t.id,
           token: t.token ?? "",
-          time: new Date(t.timestamp).toLocaleTimeString("en-GB", {
-            hour12: false,
-          }),
+          time: formatWhen(t.timestamp),
           message: `${(t.type ?? "info").toUpperCase()} ${t.token ?? ""}`,
           type: t.type ?? "info",
           pnl: typeof t.pnl === "number" ? t.pnl : undefined,
@@ -87,7 +107,7 @@ export const LiveTrades: React.FC = () => {
     if (lastMessage.event !== "tradeFeed") return;
 
     const t = lastMessage.payload;
-    const now = new Date().toLocaleTimeString("en-GB", { hour12: false });
+    const now = formatWhen(t.timestamp);
 
     // Build enhanced message with tranche/tier info
     let message =
@@ -129,7 +149,17 @@ export const LiveTrades: React.FC = () => {
       signature: t.signature ?? null,
     };
 
-    setTrades((prev) => [row, ...prev].slice(0, 200));
+    setTrades((prev) => {
+      // A real buy/sell that isn't already listed adds one to the lifetime
+      // count; the backend count is re-read on the next page load anyway.
+      if (
+        (row.type === "buy" || row.type === "sell") &&
+        !prev.some((r) => r.id === row.id)
+      ) {
+        setTotalTrades((n) => (n === null ? n : n + 1));
+      }
+      return [row, ...prev].slice(0, 200);
+    });
   }, [lastMessage]);
 
   useEffect(() => {
@@ -144,6 +174,14 @@ export const LiveTrades: React.FC = () => {
       <div className="flex items-center justify-between mb-3">
         <h2 className="text-lg font-semibold flex items-center gap-2">
           <TerminalSquare size={18} /> Live Trades
+          {totalTrades !== null && (
+            <span
+              className="text-xs font-normal text-gray-400"
+              title="Total trades for this wallet (buys and sells)"
+            >
+              {totalTrades} {totalTrades === 1 ? "trade" : "trades"}
+            </span>
+          )}
         </h2>
         <div className="text-xs text-gray-400">
           {connected ? "Live" : "Offline"}
@@ -159,8 +197,6 @@ export const LiveTrades: React.FC = () => {
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -6 }}
               transition={{ duration: 0.18 }}
-              onClick={() => t.token && router.push(`/trading/${t.token}`)}
-              title={t.token ? "View full token details" : undefined}
               className={`p-2 rounded ${t.token ? "cursor-pointer" : ""} ${
                 t.message.includes("🚨 EMERGENCY")
                   ? "bg-red-900/40 text-red-300 border border-red-500/50 font-bold"

@@ -13,6 +13,8 @@ jest.mock("../services/jupiter.service.js", () => ({
   __esModule: true,
   getSolPriceUsd: jest.fn().mockResolvedValue(200),
   getQuoteImpliedPriceSol: jest.fn().mockResolvedValue(0.002),
+  // Dashboard routes read the price cache only (never await Jupiter).
+  getCachedQuoteImpliedPriceSol: jest.fn().mockReturnValue(0.002),
   SOL_MINT: "So11111111111111111111111111111111111111112",
   default: {
     getSolPriceUsd: jest.fn().mockResolvedValue(200),
@@ -79,6 +81,33 @@ describe("GET /api/user-wallet/:ownerWallet/owner-balance", () => {
     const res = await request(app).get("/api/user-wallet/not-a-pubkey/owner-balance");
     expect(res.statusCode).toBe(400);
     expect(res.body.success).toBe(false);
+  });
+});
+
+describe("GET /api/trade/history", () => {
+  it("returns the latest page plus the wallet's total trade count", async () => {
+    const wallet = "RouteTestWalletHistoryTotal33333333333333";
+    for (let i = 0; i < 3; i++) {
+      await dbService.addTrade({
+        type: "buy",
+        token: `MINT_HISTORY_${i}`,
+        amount: 1_000_000,
+        price: 0.001,
+        wallet,
+      });
+    }
+    const res = await request(app).get(
+      `/api/trade/history?limit=2&wallet=${wallet}`,
+    );
+    expect(res.statusCode).toBe(200);
+    expect(res.body.trades).toHaveLength(2);
+    expect(res.body.total).toBe(3);
+  });
+
+  it("returns an empty page and a zero total without a wallet", async () => {
+    const res = await request(app).get("/api/trade/history");
+    expect(res.body.trades).toEqual([]);
+    expect(res.body.total).toBe(0);
   });
 });
 

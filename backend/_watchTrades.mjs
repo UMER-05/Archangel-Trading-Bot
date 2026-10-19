@@ -16,7 +16,7 @@ async function watchForever() {
       for await (const change of changeStream) {
         const t = change.fullDocument || {};
         console.log(
-          `NEW_TRADE type=${t.type} token=${t.token} amount=${t.amount} price=${t.price} simulated=${t.simulated} signature=${t.signature} route=${t.route} wallet=${t.wallet}`
+          `NEW_TRADE type=${t.type} token=${t.token} amount=${t.amount} price=${t.price} simulated=${t.simulated} signature=${t.signature} route=${t.route} wallet=${t.wallet}`,
         );
       }
     } catch (err) {
