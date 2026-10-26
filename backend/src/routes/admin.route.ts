@@ -4,6 +4,7 @@ import dbService from "../services/db.service.js";
 import { executeJupiterSwap } from "../services/jupiter.service.js";
 import notify from "../services/notifications/notify.service.js";
 import pnlTrackerService from "../services/pnlTracker.service.js";
+import { getMonitorHealth } from "../utils/monitorHealth.js";
 import userWalletService from "../services/userWallet.service.js";
 import { loadKeypairFromEnv } from "../services/solana.service.js";
 import { emitToWalletOrGlobal } from "../utils/walletSocket.js";
@@ -230,5 +231,20 @@ router.post("/force-sell", async (req, res) => {
 // expired) is ever wanted, that needs a real `status` field on TradeRecord
 // (db.service.ts) set at /prepare and /confirm time, not a bolt-on cancel
 // endpoint with nothing to attach to.
+
+/**
+ * GET /api/admin/monitor-health
+ * Liveness of the position monitor (the loop that enforces stop loss /
+ * take profit / emergency exits). `stale: true` means no tick has completed
+ * within the alert window and open positions are currently unprotected.
+ * Read-only and unauthenticated on purpose: it leaks nothing but timings.
+ */
+router.get("/monitor-health", (_req, res) => {
+  const health = getMonitorHealth();
+  return res.status(health.stale ? 503 : 200).json({
+    success: !health.stale,
+    ...health,
+  });
+});
 
 export default router;

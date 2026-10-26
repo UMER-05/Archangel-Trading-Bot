@@ -11,9 +11,15 @@ import { Connection, Commitment, Keypair, PublicKey } from "@solana/web3.js";
 import { checkAllEmergencyTriggers } from "./emergencyExit.service.js";
 import pnlTrackerService from "./pnlTracker.service.js";
 import userWalletService from "./userWallet.service.js";
-import { loadKeypairFromEnv } from "./solana.service.js";
+import { loadKeypairFromEnv, getTokenBalance } from "./solana.service.js";
+import type { SellRouteResult } from "./execution/sellExecutionRouter.service.js";
 import { emitToWalletOrGlobal } from "../utils/walletSocket.js";
 import { getEffectiveConfig } from "./traderConfig.service.js";
+import {
+  monitorHealth,
+  getMonitorHealth,
+  MONITOR_STALE_ALERT_MS,
+} from "../utils/monitorHealth.js";
 
 const OPERATOR_WALLET =
   process.env.ADMIN_WALLET_PUBKEY || process.env.WALLET_PUBLIC_KEY || "";
@@ -43,25 +49,45 @@ async function resolveSignerForPosition(
 // still trying occasionally in case liquidity genuinely comes back.
 const SELL_BACKOFF_BASE_INTERVAL_MS = 5_000;
 const SELL_BACKOFF_MAX_INTERVAL_MS = 60_000;
+// Urgent exits (stop loss, trailing stop, emergency) use a much tighter
+// backoff: a loss that is still growing must be retried on nearly every
+// tick, not parked for up to a minute. Each attempt also widens slippage
+// (see EXIT_SLIPPAGE_LADDER_BPS) so a retry actually changes something
+// instead of re-sending the same doomed order at a lower price.
+const SELL_BACKOFF_URGENT_BASE_INTERVAL_MS = Number(
+  process.env.SELL_BACKOFF_URGENT_BASE_MS ?? 2_000,
+);
+const SELL_BACKOFF_URGENT_MAX_INTERVAL_MS = Number(
+  process.env.SELL_BACKOFF_URGENT_MAX_MS ?? 15_000,
+);
 const SELL_NOTIFY_EVERY_N_BACKED_OFF_ATTEMPTS = 12;
 
 /** True if this position is in backoff cooldown and this tick should skip
  * attempting a sell for it entirely (no Jupiter call, no log spam). Exported
  * for scripts/exit-check.ts so a dry run reports the same cooldown the live
- * monitor is honoring, instead of a hand-rolled approximation. */
-export function isSellInBackoffCooldown(pos: {
-  sellFailureCount?: number;
-  lastSellAttemptAt?: Date | string | null;
-}): boolean {
+ * monitor is honoring, instead of a hand-rolled approximation.
+ *
+ * `urgent` selects the short stop-loss/emergency schedule; the default is
+ * the slow schedule used for take-profit and tiered sells. */
+export function isSellInBackoffCooldown(
+  pos: {
+    sellFailureCount?: number;
+    lastSellAttemptAt?: Date | string | null;
+  },
+  urgent = false,
+): boolean {
   const failures = pos.sellFailureCount ?? 0;
   if (failures <= 0) return false;
   const last = pos.lastSellAttemptAt
     ? new Date(pos.lastSellAttemptAt).getTime()
     : 0;
-  const interval = Math.min(
-    SELL_BACKOFF_MAX_INTERVAL_MS,
-    SELL_BACKOFF_BASE_INTERVAL_MS * 2 ** Math.max(0, failures - 1),
-  );
+  const baseMs = urgent
+    ? SELL_BACKOFF_URGENT_BASE_INTERVAL_MS
+    : SELL_BACKOFF_BASE_INTERVAL_MS;
+  const maxMs = urgent
+    ? SELL_BACKOFF_URGENT_MAX_INTERVAL_MS
+    : SELL_BACKOFF_MAX_INTERVAL_MS;
+  const interval = Math.min(maxMs, baseMs * 2 ** Math.max(0, failures - 1));
   return Date.now() - last < interval;
 }
 
@@ -195,6 +221,187 @@ export const TRAILING_ACTIVATION_PCT = Number(
 );
 export const TRAILING_STOP_PCT = Number(process.env.TRAILING_STOP_PCT ?? 0.05);
 
+// Once the trailing stop has activated, apply it to the WHOLE remaining
+// position rather than only the final 10% (the old behavior, which with the
+// default TP/tier numbers meant the trailing stop never fired at all — the
+// tiers only reduce remainingPct when they sit below the TP, so remainingPct
+// stayed at 100 and the stop loss stayed pinned to the entry price however
+// high the position had run). Set TRAILING_FULL_POSITION=false to restore
+// the final-10%-only rule.
+export const TRAILING_FULL_POSITION =
+  process.env.TRAILING_FULL_POSITION !== "false";
+
+/* ------------------------------------------------------------------
+   EXIT SLIPPAGE LADDERS
+------------------------------------------------------------------ */
+
+function parseLadderBps(raw: string | undefined, fallback: number[]): number[] {
+  if (!raw) return fallback;
+  const parsed = raw
+    .split(",")
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isFinite(n) && n > 0 && n <= 10_000);
+  return parsed.length > 0 ? parsed : fallback;
+}
+
+// A stop-loss or emergency sell fires exactly when the pool is thin and the
+// price is moving against us. At the old 1% slippage those orders mostly
+// reverted on-chain, were counted as "failed", and waited out a backoff
+// while the loss grew. Urgent exits now start wide and widen further on
+// each in-tick retry; the final rung is deliberately brutal because at that
+// point a bad fill beats holding a token on its way to zero.
+export const EXIT_SLIPPAGE_LADDER_BPS = parseLadderBps(
+  process.env.EXIT_SLIPPAGE_LADDER_BPS,
+  [1500, 3000, 5000],
+);
+// Profit-side sells (TP / tiers) are not time-critical, so they start at the
+// configured default slippage and only widen moderately.
+export const PROFIT_SLIPPAGE_LADDER_BPS = parseLadderBps(
+  process.env.PROFIT_SLIPPAGE_LADDER_BPS,
+  [Number(process.env.DEFAULT_SLIPPAGE_PCT ?? 1) * 100, 500, 1500],
+);
+
+/** Errors for which widening slippage cannot help — stop the ladder early. */
+function isNonSlippageSellError(error: string | undefined): boolean {
+  if (!error) return false;
+  const e = error.toLowerCase();
+  return (
+    e.includes("no jupiter route") ||
+    e.includes("signer does not match") ||
+    e.includes("missing signer")
+  );
+}
+
+/**
+ * Attempts a sell at each slippage rung in turn until one succeeds. The sell
+ * router claims the position's exit lease per attempt and releases it on
+ * failure, so consecutive attempts here are safe. Returns the last result
+ * plus the rung it was attempted at.
+ */
+async function sellWithWideningSlippage(
+  params: {
+    tokenMint: string;
+    wallet: string;
+    amountBaseUnits: number;
+    signer: Keypair;
+  },
+  ladderBps: number[],
+  label: string,
+): Promise<SellRouteResult & { attemptedBps: number; attempts: number }> {
+  let last: SellRouteResult | null = null;
+  let attemptedBps = ladderBps[0] ?? 100;
+  let attempts = 0;
+  for (const bps of ladderBps) {
+    attempts++;
+    attemptedBps = bps;
+    const res = await sellExecutionRouterService.routeSell({
+      tokenMint: params.tokenMint,
+      wallet: params.wallet,
+      amountBaseUnits: params.amountBaseUnits,
+      slippageBps: bps,
+      signer: params.signer,
+      useRealSwap: true,
+    });
+    last = res;
+    if (res.route === "skipped" || res.success) break;
+    if (isNonSlippageSellError(res.error)) {
+      log.warn(
+        { tokenMint: params.tokenMint, bps, error: res.error, label },
+        "Sell failed for a reason slippage cannot fix — not widening further",
+      );
+      break;
+    }
+    log.warn(
+      { tokenMint: params.tokenMint, bps, error: res.error, label },
+      "Sell attempt failed — widening slippage and retrying",
+    );
+  }
+  return { ...(last as SellRouteResult), attemptedBps, attempts };
+}
+
+/* ------------------------------------------------------------------
+   ON-CHAIN SELL AMOUNT
+------------------------------------------------------------------ */
+
+/**
+ * The DB's token quantity is an estimate derived from the quoted (not
+ * filled) buy. Selling that estimate either asks for more tokens than the
+ * wallet holds (the sell reverts) or leaves dust behind. Read the real
+ * balance from the hot wallet right before selling:
+ *   - full exit  → sell everything the wallet actually holds
+ *   - partial    → sell min(requested, held)
+ *   - nothing    → null; the caller closes the stale position
+ * Falls back to the requested amount if the RPC read fails, so a flaky RPC
+ * never blocks a stop loss.
+ */
+async function resolveOnChainSellAmount(
+  holderPublicKey: string,
+  tokenMint: string,
+  requestedBase: number,
+  fullExit: boolean,
+): Promise<{ amount: number; onChain: boolean; held: number } | null> {
+  try {
+    const { raw } = await getTokenBalance(holderPublicKey, tokenMint);
+    const held = Number(raw);
+    if (!Number.isFinite(held)) {
+      return { amount: requestedBase, onChain: false, held: requestedBase };
+    }
+    if (held <= 0) return null;
+    const amount = fullExit ? held : Math.min(requestedBase, held);
+    return { amount: Math.floor(amount), onChain: true, held };
+  } catch (err: any) {
+    log.warn(
+      { tokenMint, err: err?.message ?? String(err) },
+      "Could not read on-chain token balance — selling the DB estimate",
+    );
+    return { amount: requestedBase, onChain: false, held: requestedBase };
+  }
+}
+
+/* ------------------------------------------------------------------
+   PRICE AVAILABILITY TRACKING
+------------------------------------------------------------------ */
+
+// A position whose price suddenly cannot be read any more (no buy route AND
+// no sell route) used to be silently skipped every tick — which is exactly
+// what a pulled pool or a honeypot looks like. After this many consecutive
+// unpriced ticks on a position that WAS priceable before, the monitor
+// treats it as an emergency and attempts a widening-slippage exit.
+const NO_PRICE_EMERGENCY_TICKS = Number(
+  process.env.NO_PRICE_EMERGENCY_TICKS ?? 3,
+);
+// Same idea for "buy route exists but sell route does not": that is the
+// textbook honeypot signature, so it escalates faster.
+const NO_SELL_ROUTE_EMERGENCY_TICKS = Number(
+  process.env.NO_SELL_ROUTE_EMERGENCY_TICKS ?? 2,
+);
+
+interface PriceTrack {
+  lastPrice: number | null;
+  noPriceTicks: number;
+  noSellRouteTicks: number;
+}
+const priceTracks = new Map<string, PriceTrack>();
+function priceTrackKey(wallet: string, mint: string): string {
+  return `${wallet}:${mint}`;
+}
+function getPriceTrack(wallet: string, mint: string): PriceTrack {
+  const key = priceTrackKey(wallet, mint);
+  let t = priceTracks.get(key);
+  if (!t) {
+    t = { lastPrice: null, noPriceTicks: 0, noSellRouteTicks: 0 };
+    priceTracks.set(key, t);
+  }
+  return t;
+}
+
+/* ------------------------------------------------------------------
+   MONITOR HEALTH / HEARTBEAT (state lives in utils/monitorHealth.ts)
+------------------------------------------------------------------ */
+
+const MONITOR_STALE_RENOTIFY_MS = 10 * 60_000;
+export { getMonitorHealth };
+
 /* ------------------------------------------------------------------
    MINT DECIMALS CACHE
 ------------------------------------------------------------------ */
@@ -245,9 +452,53 @@ export function startPositionMonitor(
       intervalMs,
       DEFAULT_TP_PCT,
       DEFAULT_SL_PCT,
+      exitSlippageLadderBps: EXIT_SLIPPAGE_LADDER_BPS,
+      profitSlippageLadderBps: PROFIT_SLIPPAGE_LADDER_BPS,
+      trailingFullPosition: TRAILING_FULL_POSITION,
+      staleAlertMs: MONITOR_STALE_ALERT_MS,
     },
     "Starting position monitor",
   );
+  monitorHealth.startedAt = Date.now();
+
+  // Positions the user holds in their own connected wallet are never
+  // auto-managed (the server has no key for them). Say so once per position
+  // so "why didn't my stop loss fire" has a visible answer in the logs.
+  const selfCustodyWarned = new Set<string>();
+
+  const runTick = async () => {
+    // Overlap guard: a tick that runs longer than the interval (many
+    // positions, Jupiter rate-limit backoff, slow RPC) must not be joined by
+    // the next one — two ticks evaluating the same position can both decide
+    // to sell it. The exit lease in the sell router is the last line of
+    // defence; this stops the race before it starts and makes the slowness
+    // visible instead of silently stacking ticks.
+    if (monitorHealth.tickRunning) {
+      monitorHealth.overlapsSkipped++;
+      const runningForMs = Date.now() - monitorHealth.lastTickStartedAt;
+      if (runningForMs > intervalMs * 2) {
+        log.warn(
+          { runningForMs, positions: monitorHealth.lastTickPositions },
+          "Position monitor tick is still running — skipping this interval (reaction time is degraded)",
+        );
+      }
+      return;
+    }
+    monitorHealth.tickRunning = true;
+    monitorHealth.lastTickStartedAt = Date.now();
+    try {
+      await tick();
+      monitorHealth.lastError = null;
+    } catch (err: any) {
+      monitorHealth.lastError = err?.message ?? String(err);
+    } finally {
+      monitorHealth.tickRunning = false;
+      monitorHealth.lastTickCompletedAt = Date.now();
+      monitorHealth.lastTickDurationMs =
+        monitorHealth.lastTickCompletedAt - monitorHealth.lastTickStartedAt;
+      monitorHealth.ticksCompleted++;
+    }
+  };
 
   const tick = async () => {
     try {
@@ -266,11 +517,22 @@ export function startPositionMonitor(
       const positions: MonitorPosition[] = (
         await dbService.getPositions()
       ).filter((p) => isBotManagedOpenPosition(p));
+      monitorHealth.lastTickPositions = positions.length;
 
       for (const pos of positions) {
         try {
           const tokenMint = pos.token;
           if (!tokenMint) continue;
+          if (pos.custody === "self") {
+            const key = `${pos.wallet}:${tokenMint}`;
+            if (!selfCustodyWarned.has(key)) {
+              selfCustodyWarned.add(key);
+              log.info(
+                { tokenMint, wallet: pos.wallet },
+                "Self-custody position: no auto stop-loss/take-profit — the owner must sell it manually",
+              );
+            }
+          }
           // Self-custody positions (manual buys, held in the user's own
           // connected wallet) can't be auto-managed here at all — this
           // monitor only ever resolves a signer for the operator's env key
@@ -319,7 +581,12 @@ export function startPositionMonitor(
           // token with no Jupiter route left) backs off to a slow retry
           // instead of hammering Jupiter and re-alerting every 5-second tick
           // forever — see recordSellFailure/isSellInBackoffCooldown above.
-          if (isSellInBackoffCooldown(pos)) {
+          // Only the SHORT (urgent) cooldown gates the whole tick: a position
+          // in the slow take-profit backoff still gets priced and still gets
+          // its emergency / stop-loss checks, because a failed TP sell must
+          // never pause the stop loss. The slow cooldown is applied below,
+          // only to the profit-side sells themselves.
+          if (isSellInBackoffCooldown(pos, true)) {
             continue;
           }
 
@@ -405,14 +672,96 @@ export function startPositionMonitor(
           // source available; it carries a mild price-impact bias that a
           // true aggregated feed wouldn't, but a FIXED small size keeps that
           // bias consistent and small rather than scaling with position size.
-          const currentPrice = await getQuoteImpliedPriceSol(
+          //
+          // Two prices are read per position per tick:
+          //   referencePrice — the small buy-side probe above (shared with
+          //                    the dashboard cache, so it stays warm)
+          //   sellSidePrice  — a real sell quote for THIS position's remaining
+          //                    size. This is what the position would actually
+          //                    fetch right now, impact included, so TP/SL are
+          //                    judged on the realizable price instead of a
+          //                    buy-side number that always reads higher.
+          // The sell-side price wins whenever it is available.
+          const track = getPriceTrack(pos.wallet, tokenMint);
+          const remainingAmountBase = Math.floor(
+            fullAmountBase * (remainingPct / 100),
+          );
+
+          const referencePrice = await getQuoteImpliedPriceSol(
             tokenMint,
             decimals,
           );
+          let sellSidePrice: number | null = null;
+          if (remainingAmountBase > 0) {
+            try {
+              const sellQuote = await getJupiterQuote(
+                tokenMint,
+                SOL_MINT,
+                remainingAmountBase,
+                500,
+              );
+              const out = Number(sellQuote?.outAmount ?? 0);
+              if (out > 0) {
+                sellSidePrice = out / 1e9 / (remainingAmountBase / base);
+              }
+            } catch (err: any) {
+              log.debug(
+                { tokenMint, err: err?.message ?? String(err) },
+                "Sell-side quote failed; falling back to reference price",
+              );
+            }
+          }
+
+          const livePrice: number | null =
+            sellSidePrice ?? (referencePrice || null);
+          const priceSource =
+            sellSidePrice != null
+              ? "sell-quote"
+              : livePrice
+                ? "reference-buy-quote"
+                : "none";
+
+          // "No price" is itself a signal. A token that was priceable and
+          // suddenly is not (no buy route and no sell route) is usually
+          // being rugged or delisted; a token with a buy route but no sell
+          // route is the honeypot signature. Neither used to do anything but
+          // skip the tick — now they are counted and escalate to an
+          // emergency exit attempt, and the LP-removal / creator-sell checks
+          // below still run on the last known price in the meantime.
+          let forcedEmergencyReason: string | undefined;
+          if (!livePrice) {
+            track.noPriceTicks++;
+            track.noSellRouteTicks = 0;
+            if (
+              track.lastPrice != null &&
+              track.noPriceTicks >= NO_PRICE_EMERGENCY_TICKS
+            ) {
+              forcedEmergencyReason = `No price for ${track.noPriceTicks} consecutive ticks (no buy or sell route — possible rug/delisting)`;
+            }
+          } else {
+            track.noPriceTicks = 0;
+            if (
+              referencePrice &&
+              sellSidePrice == null &&
+              remainingAmountBase > 0
+            ) {
+              track.noSellRouteTicks++;
+              if (track.noSellRouteTicks >= NO_SELL_ROUTE_EMERGENCY_TICKS) {
+                forcedEmergencyReason = `Buy route exists but no sell route for ${track.noSellRouteTicks} consecutive ticks (honeypot signature)`;
+              }
+            } else {
+              track.noSellRouteTicks = 0;
+            }
+          }
+
+          // The price every decision below is made on. With no live price,
+          // the last known one keeps the emergency checks running; TP/SL
+          // are deferred (see below) because they need a real number.
+          const currentPrice: number | null = livePrice ?? track.lastPrice;
           if (!currentPrice) {
             log.warn(
               { tokenMint, wallet: pos.wallet },
-              "No trustworthy price; deferring TP/SL evaluation",
+              "No trustworthy price and no history; deferring evaluation",
             );
             continue;
           }
@@ -431,6 +780,7 @@ export function startPositionMonitor(
             );
             continue;
           }
+          if (livePrice) track.lastPrice = livePrice;
 
           // Update highest PnL for trailing stop - RULE 9
           const highestPnl = pos.highestPnlPct ?? pnlPercent;
@@ -475,12 +825,21 @@ export function startPositionMonitor(
           // 3 of the 4 triggers below (LP removal, large-sell, creator-sell)
           // silently no-op — this lookup is what makes them real.
           const tokenState = await dbService.getTokenState(tokenMint);
-          const emergencyCheck = await checkAllEmergencyTriggers(
+          const onChainEmergency = await checkAllEmergencyTriggers(
             tokenMint,
             currentPrice,
             tokenState?.poolAddress || undefined,
             tokenState?.creatorAddress || undefined,
           );
+          const emergencyCheck = onChainEmergency.shouldExit
+            ? onChainEmergency
+            : forcedEmergencyReason
+              ? {
+                  shouldExit: true,
+                  triggers: onChainEmergency.triggers,
+                  criticalReason: forcedEmergencyReason,
+                }
+              : onChainEmergency;
 
           if (emergencyCheck.shouldExit) {
             log.error(
@@ -513,18 +872,40 @@ export function startPositionMonitor(
             const emergencySigner = await resolveSignerForPosition(pos.wallet);
 
             if (useRealSwap && emergencySigner) {
+              // Sell what the wallet REALLY holds, not the DB estimate.
+              const emergencyAmount = await resolveOnChainSellAmount(
+                emergencySigner.publicKey.toBase58(),
+                tokenMint,
+                fullAmountBase,
+                true,
+              );
+              if (!emergencyAmount) {
+                log.warn(
+                  { tokenMint, wallet: pos.wallet },
+                  "Emergency exit: wallet holds no tokens for this position — closing the stale record",
+                );
+                await dbService.updatePositionMetadata(tokenMint, pos.wallet, {
+                  remainingPct: 0,
+                });
+                pnlTrackerService.stopTracking(tokenMint, pos.wallet);
+                continue;
+              }
+
               // solLamportsOut below replaces the old separate Jupiter-quote
               // call for recording actual SOL proceeds — the router
               // computes/passes it through regardless of which path
-              // (native or Jupiter) actually executed.
-              const emergencySwap = await sellExecutionRouterService.routeSell({
-                tokenMint,
-                wallet: pos.wallet,
-                amountBaseUnits: fullAmountBase,
-                slippageBps: 1000, // High slippage for emergency
-                signer: emergencySigner,
-                useRealSwap: true,
-              });
+              // (native or Jupiter) actually executed. Slippage starts wide
+              // and widens on each failed attempt (EXIT_SLIPPAGE_LADDER_BPS).
+              const emergencySwap = await sellWithWideningSlippage(
+                {
+                  tokenMint,
+                  wallet: pos.wallet,
+                  amountBaseUnits: emergencyAmount.amount,
+                  signer: emergencySigner,
+                },
+                EXIT_SLIPPAGE_LADDER_BPS,
+                "emergency",
+              );
 
               if (emergencySwap.route === "skipped") {
                 // Another tick/process already has this position's exit
@@ -612,6 +993,17 @@ export function startPositionMonitor(
             continue; // Skip normal TP/SL checks - emergency handled
           }
 
+          // From here on a REAL current price is required: TP/SL/tiers must
+          // never be decided on a stale last-known price (the emergency
+          // checks above are the only thing allowed to run on one).
+          if (!livePrice) {
+            log.warn(
+              { tokenMint, wallet: pos.wallet, noPriceTicks: track.noPriceTicks },
+              "No live price this tick; emergency checks ran, TP/SL deferred",
+            );
+            continue;
+          }
+
           // ✨ RULE 9: TIERED PROFIT TARGETS (30% at +40%, +80%, +150%)
           // (remainingPct <= 0 already handled above, before the price fetch)
 
@@ -657,6 +1049,16 @@ export function startPositionMonitor(
             tierReason = `Tier 3: +${(TIER3_PROFIT_PCT * 100).toFixed(0)}% profit`;
           }
 
+          // Profit-side sells honor the slow backoff (a tier that failed a
+          // moment ago is not urgent); the stop loss below never does.
+          if (shouldSellTiered && isSellInBackoffCooldown(pos, false)) {
+            log.debug(
+              { tokenMint, wallet: pos.wallet, tierReason },
+              "Tiered sell in backoff cooldown — skipping this tick",
+            );
+            shouldSellTiered = false;
+          }
+
           // Execute tiered sell if triggered
           if (shouldSellTiered) {
             const sellAmountBase = Math.floor(
@@ -680,18 +1082,39 @@ export function startPositionMonitor(
               const tieredSigner = await resolveSignerForPosition(pos.wallet);
 
               if (tieredSigner) {
+                const tieredAmount = await resolveOnChainSellAmount(
+                  tieredSigner.publicKey.toBase58(),
+                  tokenMint,
+                  sellAmountBase,
+                  false,
+                );
+                if (!tieredAmount) {
+                  log.warn(
+                    { tokenMint, wallet: pos.wallet },
+                    "Tiered sell: wallet holds no tokens for this position — closing the stale record",
+                  );
+                  await dbService.updatePositionMetadata(
+                    tokenMint,
+                    pos.wallet,
+                    { remainingPct: 0 },
+                  );
+                  pnlTrackerService.stopTracking(tokenMint, pos.wallet);
+                  continue;
+                }
+
                 // See emergency-exit block above: addTrade's `amount` is SOL
                 // lamports; the router returns quoted/actual SOL proceeds
                 // regardless of which path (native or Jupiter) executed.
-                const tieredSwap = await sellExecutionRouterService.routeSell({
-                  tokenMint,
-                  wallet: pos.wallet,
-                  amountBaseUnits: sellAmountBase,
-                  slippageBps:
-                    Number(process.env.DEFAULT_SLIPPAGE_PCT ?? 1) * 100,
-                  signer: tieredSigner,
-                  useRealSwap: true,
-                });
+                const tieredSwap = await sellWithWideningSlippage(
+                  {
+                    tokenMint,
+                    wallet: pos.wallet,
+                    amountBaseUnits: tieredAmount.amount,
+                    signer: tieredSigner,
+                  },
+                  PROFIT_SLIPPAGE_LADDER_BPS,
+                  "tiered-profit",
+                );
 
                 if (tieredSwap.route === "skipped") {
                   log.debug(
@@ -793,26 +1216,42 @@ export function startPositionMonitor(
 
           if (tieredSellSucceeded) continue;
 
-          // Check trailing stop for LAST 10% of position
+          // Trailing stop: once activated it ratchets the exit up with the
+          // peak. By default it now protects the WHOLE remaining position
+          // (TRAILING_FULL_POSITION); the legacy rule limited it to the final
+          // 10%, which with default settings meant it never fired and the
+          // stop loss stayed fixed at the entry price no matter how far the
+          // position had run.
           const isLastTenPercent = remainingPct <= 10;
-          const trailingStopForFinal =
-            isLastTenPercent &&
-            trailingActive &&
-            newHighest - pnlPercent >= TRAILING_STOP_PCT;
+          const trailingApplies = TRAILING_FULL_POSITION || isLastTenPercent;
+          const trailingStopForFinal = trailingApplies && trailingTriggered;
 
-          // Check TP/SL triggers (including trailing for final 10%)
+          // Check TP/SL triggers (including trailing)
           const exitCause = resolveExitCause(
             pnlPercent,
             tpPct,
             slPct,
-            isLastTenPercent && trailingStopForFinal,
+            trailingStopForFinal,
           );
           if (exitCause) {
+            const urgentExit = exitCause === "SL" || exitCause === "TRAILING";
+            // Take-profit honors the slow backoff; a stop loss or trailing
+            // stop only the short urgent one (already checked at the top of
+            // the loop), so a losing position is retried on nearly every tick.
+            if (!urgentExit && isSellInBackoffCooldown(pos, false)) {
+              log.debug(
+                { tokenMint, wallet: pos.wallet, exitCause },
+                "Take-profit sell in backoff cooldown — skipping this tick",
+              );
+              continue;
+            }
             const exitReason =
               exitCause === "TRAILING"
-                ? `Trailing stop on final 10% (peak: ${(
-                    newHighest * 100
-                  ).toFixed(1)}%, current: ${(pnlPercent * 100).toFixed(1)}%)`
+                ? `Trailing stop${
+                    TRAILING_FULL_POSITION ? "" : " on final 10%"
+                  } (peak: ${(newHighest * 100).toFixed(1)}%, current: ${(
+                    pnlPercent * 100
+                  ).toFixed(1)}%)`
                 : exitCause === "TP"
                   ? `Take profit (${(pnlPercent * 100).toFixed(1)}%)`
                   : `Stop loss (${(pnlPercent * 100).toFixed(1)}%)`;
@@ -859,24 +1298,51 @@ export function startPositionMonitor(
                   error: "Missing signer for auto-sell",
                 };
               } else {
-                // Verify balance before selling (should have tokens)
+                // A full exit sells everything the wallet actually holds —
+                // the DB quantity is only an estimate from the quoted buy.
+                const finalAmount = await resolveOnChainSellAmount(
+                  finalSigner.publicKey.toBase58(),
+                  tokenMint,
+                  sellAmountBase,
+                  true,
+                );
+                if (!finalAmount) {
+                  log.warn(
+                    { tokenMint, wallet: pos.wallet },
+                    "Final auto-sell: wallet holds no tokens for this position — closing the stale record",
+                  );
+                  await dbService.updatePositionMetadata(
+                    tokenMint,
+                    pos.wallet,
+                    { remainingPct: 0 },
+                  );
+                  pnlTrackerService.stopTracking(tokenMint, pos.wallet);
+                  continue;
+                }
                 log.info(
                   {
                     tokenMint,
-                    amount: sellAmountBase,
+                    amount: finalAmount.amount,
+                    dbEstimate: sellAmountBase,
+                    onChain: finalAmount.onChain,
                     remainingPct,
+                    urgent: urgentExit,
+                    priceSource,
                   },
                   "Executing final auto-sell",
                 );
-                const routed = await sellExecutionRouterService.routeSell({
-                  tokenMint,
-                  wallet: pos.wallet,
-                  amountBaseUnits: sellAmountBase,
-                  slippageBps:
-                    Number(process.env.DEFAULT_SLIPPAGE_PCT ?? 1) * 100,
-                  signer: finalSigner,
-                  useRealSwap: true,
-                });
+                const routed = await sellWithWideningSlippage(
+                  {
+                    tokenMint,
+                    wallet: pos.wallet,
+                    amountBaseUnits: finalAmount.amount,
+                    signer: finalSigner,
+                  },
+                  urgentExit
+                    ? EXIT_SLIPPAGE_LADDER_BPS
+                    : PROFIT_SLIPPAGE_LADDER_BPS,
+                  exitCause.toLowerCase(),
+                );
                 if (routed.route === "skipped") {
                   sellSkipped = true;
                   swapRes = {
@@ -1100,10 +1566,49 @@ export function startPositionMonitor(
     }
   };
 
-  const timer = setInterval(tick, intervalMs);
+  const timer = setInterval(() => {
+    void runTick();
+  }, intervalMs);
+
+  // Heartbeat watchdog: if no tick has completed within the stale window,
+  // every open position is unprotected (RPC/Jupiter outage, wedged loop).
+  // Log loudly and alert a human, re-alerting at a bounded rate until it
+  // recovers.
+  const watchdog = setInterval(() => {
+    const health = getMonitorHealth();
+    if (!health.stale) return;
+    const now = Date.now();
+    log.error(
+      {
+        sinceLastTickMs: health.sinceLastTickMs,
+        tickRunning: health.tickRunning,
+        lastError: health.lastError,
+        positions: health.lastTickPositions,
+      },
+      "🚨 Position monitor is STALE — open positions are not being protected",
+    );
+    if (now - monitorHealth.lastStaleNotifiedAt >= MONITOR_STALE_RENOTIFY_MS) {
+      monitorHealth.lastStaleNotifiedAt = now;
+      notify
+        .notifyError({
+          source: "position-monitor",
+          message: `Position monitor has not completed a tick for ${Math.round(
+            (health.sinceLastTickMs ?? 0) / 1000,
+          )}s — stop losses are NOT being enforced`,
+          details: {
+            tickRunning: health.tickRunning,
+            lastError: health.lastError,
+            openPositions: health.lastTickPositions,
+          },
+        })
+        .catch(() => {});
+    }
+  }, Math.min(30_000, Math.max(intervalMs, 5_000)));
+  // The watchdog must never be what keeps the process (or a test) alive.
+  (watchdog as any).unref?.();
 
   // Run one tick immediately on startup
-  tick().catch((e) =>
+  runTick().catch((e) =>
     log.warn(
       { err: (e as any)?.message ?? String(e) },
       "Initial monitor tick error",
@@ -1111,5 +1616,8 @@ export function startPositionMonitor(
   );
 
   // Allow caller to stop monitor
-  return () => clearInterval(timer);
+  return () => {
+    clearInterval(timer);
+    clearInterval(watchdog);
+  };
 }
